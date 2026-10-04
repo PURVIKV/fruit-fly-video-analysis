@@ -1,0 +1,76 @@
+REAL-TIME DETAILED VIDEO ANALYSIS OF FRUIT FLIES
+MODEL RESULTS
+===============================================
+
+1. FLY COUNT
+-------------
+Model: Decision Tree Classifier
+Criterion: Gini
+Test Accuracy: 100.00%
+
+Confusion Matrix:
+[[9, 0, 0],
+ [0, 26, 0],
+ [0, 0, 36]]
+
+Training samples: 280
+Test samples: 71
+
+
+2. SEX CLASSIFICATION
+----------------------
+Model: Logistic Regression
+Preprocessing: StandardScaler
+Test Accuracy: 88.46%
+
+Confusion Matrix:
+[[24, 2],
+ [4, 22]]
+
+Training samples: 204
+Test samples: 52
+
+
+3. ORIENTATION CLASSIFICATION
+-----------------------------
+Model: Logistic Regression
+Preprocessing: StandardScaler + PCA
+Test Accuracy: 100.00%
+
+Confusion Matrix:
+[[29, 0],
+ [0, 27]]
+
+Training samples: 221
+Test samples: 56
+
+PCA components: 4
+Explained variance: 99.60%
+
+
+4. MALE WING ANGLE
+------------------
+Model: Linear Regression
+Preprocessing: StandardScaler + PCA
+Mean Absolute Error (MAE): 4.24 degrees
+Root Mean Squared Error (RMSE): 5.31 degrees
+Standard Error: 5.25 degrees
+Maximum Absolute Error: 19.31 degrees
+
+Training samples: 411
+Test samples: 103
+
+PCA components: 4
+Explained variance: 98.86%
+
+
+5. VIDEO PIPELINE
+-----------------
+Input video: test1.mp4
+Resolution: 1530 x 1530
+Input FPS: 35.00
+Frames processed: 351
+Average processing FPS: 34.82
+
+Output:
+results/videos/final_demo.mp4
