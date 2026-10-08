@@ -266,7 +266,7 @@ def summarise(task, scheme, folds):
     return rows
 
 
-def write_markdown(table, sizes, path):
+def write_markdown(table, sizes, sessions, path):
 
     lines = [
         "# Evaluation",
@@ -329,10 +329,18 @@ def write_markdown(table, sizes, path):
         "wall) are not in the dataset, so it is an upper bound.",
         "- Wing: the random scheme splits individual wings, as the original "
         "script did, so it has no end-to-end column (that needs whole flies).",
-        "- Leave-one-session-out has 5 folds for count / sex / orientation "
-        "and 4 for wing (12-05_12-43-00 has no isolated male with wing labels).",
+        "- Leave-one-session-out only has a fold for sessions that contain "
+        "examples of that task:",
         ""
     ]
+
+    for task, task_sessions in sessions.items():
+        lines.append(
+            f"  - {task}: {len(task_sessions)} sessions "
+            f"({', '.join(task_sessions)})"
+        )
+
+    lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -405,7 +413,8 @@ def plot_pca_curves(orient_data, wing_data):
     style_axis(axes[1], "Orientation: mean angular error", "degrees")
     chosen_marker(axes[1], orientation.N_COMPONENTS)
 
-    figure.suptitle("Leave-one-session-out, mean over 5 sessions "
+    figure.suptitle("Leave-one-session-out, mean over "
+                    f"{len(np.unique(orient_data['session']))} sessions "
                     "(components capped at the training-set size)",
                     x=0.01, ha="left", fontsize=9, color=TEXT_SECONDARY)
     figure.tight_layout()
@@ -431,7 +440,8 @@ def plot_pca_curves(orient_data, wing_data):
 
     axis.legend(frameon=False, labelcolor=TEXT_PRIMARY, loc="lower left")
 
-    figure.suptitle("Leave-one-session-out, mean over 4 sessions "
+    figure.suptitle("Leave-one-session-out, mean over "
+                    f"{len(np.unique(wing_data['session']))} sessions "
                     "(components capped at the training-set size)",
                     x=0.01, ha="left", fontsize=9, color=TEXT_SECONDARY)
     figure.tight_layout()
@@ -484,7 +494,12 @@ def main():
 
     table.to_csv(METRICS_DIR / "evaluation.csv", index=False, float_format="%.4f")
 
-    write_markdown(table, sizes, METRICS_DIR / "evaluation.md")
+    sessions = {
+        task: [str(name) for name in np.unique(task_data["session"])]
+        for task, task_data in data.items()
+    }
+
+    write_markdown(table, sizes, sessions, METRICS_DIR / "evaluation.md")
 
     print("Plotting PCA curves (leave-one-session-out)...")
 

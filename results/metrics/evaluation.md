@@ -54,4 +54,9 @@ Notes:
 
 - Fly count: the per-image count (sum of contour predictions == 2) is only computed when all contours of an image are in the test fold. Images with no usable contour (flies merged with the arena wall) are not in the dataset, so it is an upper bound.
 - Wing: the random scheme splits individual wings, as the original script did, so it has no end-to-end column (that needs whole flies).
-- Leave-one-session-out has 5 folds for count / sex / orientation and 4 for wing (12-05_12-43-00 has no isolated male with wing labels).
+- Leave-one-session-out only has a fold for sessions that contain examples of that task:
+
+  - fly count: 5 sessions (12-04_17-54-43, 12-05_12-43-00, 12-07_16-45-00, 12-08_11-15-00, 12-08_22-00-00)
+  - sex: 3 sessions (12-04_17-54-43, 12-08_11-15-00, 12-08_22-00-00)
+  - orientation: 4 sessions (12-04_17-54-43, 12-07_16-45-00, 12-08_11-15-00, 12-08_22-00-00)
+  - wing: 4 sessions (12-04_17-54-43, 12-07_16-45-00, 12-08_11-15-00, 12-08_22-00-00)
