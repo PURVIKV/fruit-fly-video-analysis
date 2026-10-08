@@ -1,5 +1,8 @@
 import cv2
+import json
 import math
+import platform
+import subprocess
 import time
 import joblib
 import numpy as np
@@ -20,6 +23,7 @@ from src.features import (
 
 VIDEO_PATH = "input/videos/test1.mp4"
 OUTPUT_PATH = "results/videos/final_demo.mp4"
+STATS_PATH = "results/metrics/pipeline_stats.json"
 
 FLY_COUNT_MODEL = "models/fly_count_model.pkl"
 SEX_MODEL = "models/sex_model.pkl"
@@ -384,7 +388,38 @@ def draw_results(
     return result
 
 
-def main():
+def machine_description():
+
+    cpu = platform.processor() or "unknown CPU"
+
+    if platform.system() == "Darwin":
+        try:
+            cpu = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True,
+                text=True,
+                check=True
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            pass
+
+    return (
+        f"{cpu}, {platform.system()} {platform.machine()}, "
+        f"Python {platform.python_version()}, OpenCV {cv2.__version__}"
+    )
+
+
+def main(
+    video_path=VIDEO_PATH,
+    max_frames=None,
+    display=True
+):
+    """
+    Run all models on a video and write the annotated output.
+
+    max_frames stops early (quick smoke test); display=False skips the
+    preview window. Timing is written to results/metrics/pipeline_stats.json.
+    """
 
     print("=" * 70)
     print("FRUIT FLY ML VIDEO ANALYSIS")
@@ -408,7 +443,7 @@ def main():
     # ---------------------------------------------------------
 
     cap = cv2.VideoCapture(
-        VIDEO_PATH
+        video_path
     )
 
     if not cap.isOpened():
@@ -497,8 +532,9 @@ def main():
 
     frame_count = 0
     total_time = 0.0
+    wall_start = time.perf_counter()
 
-    while True:
+    while max_frames is None or frame_count < max_frames:
 
         start = time.perf_counter()
 
@@ -558,19 +594,25 @@ def main():
             result
         )
 
-        cv2.imshow(
-            "Fruit Fly ML Analysis",
-            result
-        )
+        if display:
 
-        key = cv2.waitKey(1) & 0xFF
+            cv2.imshow(
+                "Fruit Fly ML Analysis",
+                result
+            )
 
-        if key == ord("q"):
-            break
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord("q"):
+                break
+
+    wall_time = time.perf_counter() - wall_start
 
     cap.release()
     writer.release()
-    cv2.destroyAllWindows()
+
+    if display:
+        cv2.destroyAllWindows()
 
     average_fps = (
         frame_count /
@@ -596,10 +638,43 @@ def main():
         frame_count
     )
 
+    wall_fps = (
+        frame_count /
+        wall_time
+        if wall_time > 0
+        else 0
+    )
+
+    # Processing FPS times read + detection + all models + drawing;
+    # wall-clock FPS also includes writing the video and the preview.
+
     print(
         "Average processing FPS:",
         f"{average_fps:.2f}"
     )
+
+    print(
+        "Wall-clock FPS (incl. video writing/display):",
+        f"{wall_fps:.2f}"
+    )
+
+    stats = {
+        "video": str(video_path),
+        "resolution": f"{width} x {height}",
+        "input_fps": fps,
+        "frames_processed": frame_count,
+        "max_frames": max_frames,
+        "display": display,
+        "processing_fps": round(average_fps, 2),
+        "wall_clock_fps": round(wall_fps, 2),
+        "machine": machine_description(),
+        "output": OUTPUT_PATH
+    }
+
+    Path(STATS_PATH).parent.mkdir(parents=True, exist_ok=True)
+
+    with open(STATS_PATH, "w", encoding="utf-8") as file:
+        json.dump(stats, file, indent=2)
 
     print(
         "Output video:",
