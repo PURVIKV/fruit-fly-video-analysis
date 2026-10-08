@@ -1,13 +1,20 @@
-import cv2
-import json
-import numpy as np
+"""
+Sex classification of a detected fly from its contour shape.
+
+Features: contour area and bounding-box aspect ratio, exactly what the
+pipeline computes for every detected fly (src/detection.py). Each
+annotated male (mp) / female (fp) body point is matched to the nearest
+detected contour.
+"""
+
 import sys
 
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.model_io import save_model
+import numpy as np
+
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -18,139 +25,12 @@ from sklearn.metrics import (
     classification_report
 )
 
+from src.annotations import iter_annotated_images
+from src.detection import find_candidates
+from src.model_io import save_model
 
-IMAGE_DIR = Path("input/images")
+
 MODEL_PATH = "models/sex_model.pkl"
-
-
-def load_annotation(json_path):
-    with open(
-        json_path,
-        "r",
-        encoding="utf-8"
-    ) as file:
-        data = json.load(file)
-
-    labels = {}
-
-    for shape in data.get("shapes", []):
-
-        label = shape.get("label")
-        points = shape.get("points", [])
-
-        if not points:
-            continue
-
-        x, y = points[0]
-
-        if label not in labels:
-            labels[label] = []
-
-        labels[label].append(
-            (x, y)
-        )
-
-    return labels
-
-
-def get_image_path(json_path):
-
-    for extension in [
-        ".bmp",
-        ".png",
-        ".jpg",
-        ".jpeg"
-    ]:
-
-        image_path = json_path.with_suffix(
-            extension
-        )
-
-        if image_path.exists():
-            return image_path
-
-    return None
-
-
-def find_contours(image):
-
-    gray = cv2.cvtColor(
-        image,
-        cv2.COLOR_BGR2GRAY
-    )
-
-    blurred = cv2.GaussianBlur(
-        gray,
-        (5, 5),
-        0
-    )
-
-    _, binary = cv2.threshold(
-        blurred,
-        0,
-        255,
-        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-    )
-
-    contours, _ = cv2.findContours(
-        binary,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    height, width = gray.shape
-
-    candidates = []
-
-    for contour in contours:
-
-        area = cv2.contourArea(
-            contour
-        )
-
-        if area < 500:
-            continue
-
-        x, y, w, h = cv2.boundingRect(
-            contour
-        )
-
-        if (
-            x <= 0
-            or y <= 0
-            or x + w >= width
-            or y + h >= height
-        ):
-            continue
-
-        if h == 0:
-            continue
-
-        moments = cv2.moments(
-            contour
-        )
-
-        if moments["m00"] == 0:
-            continue
-
-        center_x = (
-            moments["m10"] /
-            moments["m00"]
-        )
-
-        center_y = (
-            moments["m01"] /
-            moments["m00"]
-        )
-
-        candidates.append({
-            "area": area,
-            "aspect_ratio": w / h,
-            "center_x": center_x,
-            "center_y": center_y
-        })
-
-    return candidates
 
 
 def distance(
@@ -227,96 +107,61 @@ def match_flies(
 
 
 def build_dataset():
+    """
+    Two examples (male = 1, female = 0) per image in which both flies
+    are matched to different contours.
+
+    Returns a dict with X ([area, aspect_ratio]), y, image, session.
+    """
 
     X = []
     y = []
-    groups = []
+    images = []
+    sessions = []
 
-    json_files = sorted(
-        IMAGE_DIR.rglob("*.json")
-    )
-
-    print(
-        "JSON files found:",
-        len(json_files)
-    )
-
-    usable_images = 0
-
-    for json_path in json_files:
-
-        image_path = get_image_path(
-            json_path
-        )
-
-        if image_path is None:
-            continue
-
-        image = cv2.imread(
-            str(image_path)
-        )
-
-        if image is None:
-            continue
-
-        labels = load_annotation(
-            json_path
-        )
-
-        contours = find_contours(
-            image
-        )
+    for item in iter_annotated_images():
 
         matched = match_flies(
-            contours,
-            labels
+            find_candidates(item["image"]),
+            item["labels"]
         )
 
         if matched is None:
             continue
 
-        male, female = matched
+        for fly, label in zip(matched, [1, 0]):
 
-        # -----------------------------------------------------
-        # One ML example for the male fly.
-        # Class 1 = Male
-        # -----------------------------------------------------
+            X.append([
+                fly["area"],
+                fly["aspect_ratio"]
+            ])
+            y.append(label)
+            images.append(item["image_id"])
+            sessions.append(item["session"])
 
-        X.append([
-            male["area"],
-            male["aspect_ratio"]
-        ])
+    return {
+        "X": np.array(X),
+        "y": np.array(y),
+        "image": np.array(images),
+        "session": np.array(sessions)
+    }
 
-        y.append(1)
 
-        groups.append(
-            str(json_path)
+def make_model():
+
+    return Pipeline([
+        (
+            "scaler",
+            StandardScaler()
+        ),
+        (
+            "classifier",
+            LogisticRegression(
+                random_state=42,
+                max_iter=1000
+            )
         )
-
-        # -----------------------------------------------------
-        # One ML example for the female fly.
-        # Class 0 = Female
-        # -----------------------------------------------------
-
-        X.append([
-            female["area"],
-            female["aspect_ratio"]
-        ])
-
-        y.append(0)
-
-        groups.append(
-            str(json_path)
-        )
-
-        usable_images += 1
-
-    return (
-        np.array(X),
-        np.array(y),
-        np.array(groups),
-        usable_images
-    )
+    ])
 
 
 def main():
@@ -325,7 +170,12 @@ def main():
     print("FRUIT FLY SEX CLASSIFICATION")
     print("=" * 70)
 
-    X, y, groups, usable_images = build_dataset()
+    data = build_dataset()
+
+    X = data["X"]
+    y = data["y"]
+    groups = data["image"]
+    usable_images = len(np.unique(groups))
 
     if len(X) == 0:
 
@@ -403,19 +253,7 @@ def main():
     # StandardScaler + Logistic Regression.
     # ---------------------------------------------------------
 
-    model = Pipeline([
-        (
-            "scaler",
-            StandardScaler()
-        ),
-        (
-            "classifier",
-            LogisticRegression(
-                random_state=42,
-                max_iter=1000
-            )
-        )
-    ])
+    model = make_model()
 
     model.fit(
         X_train,
