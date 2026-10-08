@@ -1,9 +1,13 @@
 import cv2
 import json
 import numpy as np
-import joblib
+import sys
 
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.model_io import save_model
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -482,9 +486,10 @@ def main():
         exist_ok=True
     )
 
-    joblib.dump(
+    save_model(
         model,
-        MODEL_PATH
+        MODEL_PATH,
+        __file__
     )
 
     print(

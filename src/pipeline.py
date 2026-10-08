@@ -6,9 +6,10 @@ import numpy as np
 from pathlib import Path
 
 from src.detection import (
-    detect_flies,
+    find_candidates,
     orientation_from_contour
 )
+from src.features import count_features
 
 
 VIDEO_PATH = "input/videos/test1.mp4"
@@ -45,6 +46,39 @@ def load_models():
     print("All 4 models loaded successfully.")
 
     return models
+
+
+def predict_fly_count(
+    model,
+    candidates
+):
+    """
+    Predict the number of flies in every contour.
+
+    Returns the frame's fly count (sum over contours) and the contours
+    that contain at least one fly, each tagged with "fly_count".
+    """
+
+    if not candidates:
+        return 0, []
+
+    counts = model.predict(
+        np.array([
+            count_features(candidate)
+            for candidate in candidates
+        ])
+    )
+
+    flies = []
+
+    for candidate, count in zip(candidates, counts):
+
+        candidate["fly_count"] = int(count)
+
+        if count > 0:
+            flies.append(candidate)
+
+    return int(np.sum(counts)), flies
 
 
 def predict_sex(
@@ -178,20 +212,39 @@ def draw_results(
         # ML predictions
         # -----------------------------------------------------
 
-        sex = predict_sex(
-            models["sex"],
-            fly
-        )
+        # A contour predicted to hold two touching flies cannot be
+        # split, so per-fly models are not run on it.
 
-        orientation = predict_orientation(
-            models["orientation"],
-            contour
-        )
+        if fly["fly_count"] == 1:
 
-        wing_angle = predict_wing_angle(
-            models["wing"],
-            fly
-        )
+            sex = predict_sex(
+                models["sex"],
+                fly
+            )
+
+            orientation = predict_orientation(
+                models["orientation"],
+                contour
+            )
+
+            wing_angle = predict_wing_angle(
+                models["wing"],
+                fly
+            )
+
+            information = [
+                f"Fly {index + 1}",
+                f"Sex: {sex}",
+                f"Orientation: {orientation:.1f} deg",
+                f"Wing angle: {wing_angle:.1f} deg"
+            ]
+
+        else:
+
+            information = [
+                f"Blob {index + 1}: "
+                f"{fly['fly_count']} flies touching"
+            ]
 
         # -----------------------------------------------------
         # Draw contour
@@ -229,13 +282,6 @@ def draw_results(
             y - 100,
             20
         )
-
-        information = [
-            f"Fly {index + 1}",
-            f"Sex: {sex}",
-            f"Orientation: {orientation:.1f} deg",
-            f"Wing angle: {wing_angle:.1f} deg"
-        ]
 
         for line_number, text in enumerate(
             information
@@ -416,44 +462,14 @@ def main():
         if not ret:
             break
 
-        flies = detect_flies(
-            frame
-        )
-
         # -----------------------------------------------------
-        # Fly-count model
+        # Fly-count model: one prediction per detected contour
+        # (0, 1 or 2 flies); the frame count is their sum.
         # -----------------------------------------------------
 
-        count_features = []
-
-        for i in range(2):
-
-            if i < len(flies):
-
-                fly = flies[i]
-
-                count_features.extend([
-                    fly["area"],
-                    fly["width"],
-                    fly["height"],
-                    fly["aspect_ratio"]
-                ])
-
-            else:
-
-                count_features.extend([
-                    0,
-                    0,
-                    0,
-                    0
-                ])
-
-        count_prediction = int(
-            models["count"].predict(
-                np.array([
-                    count_features
-                ])
-            )[0]
+        count_prediction, flies = predict_fly_count(
+            models["count"],
+            find_candidates(frame)
         )
 
         # -----------------------------------------------------

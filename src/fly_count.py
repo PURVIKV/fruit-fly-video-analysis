@@ -1,3 +1,15 @@
+# DEPRECATED - do not use for training or evaluation.
+#
+# This script labels each video frame with min(number of detected
+# contours, 2) and then uses the sizes of those same contours as features,
+# so the label is a deterministic function of the input (circular; the
+# 100% accuracy it reports is guaranteed by construction). It also never
+# saves a model.
+#
+# The fly-count model is now trained by train/train_fly_count.py on
+# annotated images: one example per detected contour, labelled with the
+# number of annotated flies (mp/fp points) inside it. Kept for reference.
+
 import cv2
 import numpy as np
 
