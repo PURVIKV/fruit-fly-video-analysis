@@ -96,3 +96,40 @@ def points_inside(contour, points):
         cv2.pointPolygonTest(contour, (float(x), float(y)), False) >= 0
         for x, y in points
     )
+
+
+FLIES = {
+    # sex: (body point, head, abdomen)
+    "male": ("mp", "mh", "ma"),
+    "female": ("fp", "fh", "fa")
+}
+
+
+def match_isolated_flies(candidates, labels):
+    """
+    For each sex, the detected contour that contains that fly's body point
+    and not the other fly's (i.e. a single, isolated fly), or None.
+    Contours holding both touching flies are skipped: they cannot be
+    oriented or measured as one fly.
+    """
+
+    matched = {}
+
+    for sex, (body, _, _) in FLIES.items():
+
+        other = "fp" if body == "mp" else "mp"
+
+        matched[sex] = None
+
+        for candidate in candidates:
+
+            contour = candidate["contour"]
+
+            if (
+                points_inside(contour, labels.get(body, [])) > 0
+                and points_inside(contour, labels.get(other, [])) == 0
+            ):
+                matched[sex] = candidate
+                break
+
+    return matched

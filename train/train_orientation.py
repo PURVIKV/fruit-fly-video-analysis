@@ -1,448 +1,250 @@
-import json
-import math
+"""
+Image-based fly orientation (Stanford CS229 fruit-fly approach).
+
+1. Axis angle (0-180 deg) from the image moments of the fly's contour
+   (src/detection.py orientation_from_contour).
+2. Fixed-size patch around the contour centroid, rotated so that axis
+   points up (src/features.py).
+3. HOG -> PCA -> LogisticRegression predicts whether the head is at the
+   bottom of the patch, i.e. the heading is axis + 180 deg ("flip").
+
+Ground truth heading = direction abdomen -> head from the annotated
+head/abdomen points (male: mh/ma, female: fh/fa). The features use only
+the frame and the detected contour, never the annotated points.
+
+Errors reported:
+  (a) flip-classifier error
+  (b) final angular error, |predicted heading - true heading| on the circle
+  (c) baseline: always predict the training set's majority flip
+"""
+
 import sys
-import numpy as np
 
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.model_io import save_model
-from sklearn.model_selection import train_test_split
+import numpy as np
+
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    accuracy_score,
-    confusion_matrix,
-    classification_report
+
+from src.annotations import FLIES, iter_annotated_images, match_isolated_flies
+from src.detection import find_candidates, orientation_from_contour
+from src.features import (
+    angle_difference,
+    heading_from_points,
+    orientation_features,
+    to_gray
 )
+from src.model_io import save_model
 
 
-ANNOTATION_DIR = Path("input/images")
 MODEL_PATH = "models/orientation_model.pkl"
 
-
-def load_annotation(json_path):
-    """Read annotation points from a JSON file."""
-
-    with open(
-        json_path,
-        "r",
-        encoding="utf-8"
-    ) as file:
-
-        data = json.load(file)
-
-    labels = {}
-
-    for shape in data.get("shapes", []):
-
-        label = shape.get("label")
-        points = shape.get("points", [])
-
-        if not points:
-            continue
-
-        x, y = points[0]
-
-        if label not in labels:
-            labels[label] = []
-
-        labels[label].append(
-            (x, y)
-        )
-
-    return labels
-
-
-def calculate_angle(
-    x1,
-    y1,
-    x2,
-    y2
-):
-    """Calculate angle from point 1 to point 2."""
-
-    dx = x2 - x1
-    dy = y2 - y1
-
-    angle = math.degrees(
-        math.atan2(
-            -dy,
-            dx
-        )
-    )
-
-    if angle < 0:
-        angle += 360
-
-    return angle
-
-
-def calculate_distance(
-    x1,
-    y1,
-    x2,
-    y2
-):
-    """Calculate Euclidean distance."""
-
-    return math.sqrt(
-        (x2 - x1) ** 2 +
-        (y2 - y1) ** 2
-    )
-
-
-def create_features(labels):
-    """
-    Create geometric features from male head,
-    body point and abdomen.
-    """
-
-    if (
-        not labels.get("mh")
-        or not labels.get("mp")
-        or not labels.get("ma")
-    ):
-        return None
-
-    head_x, head_y = labels["mh"][0]
-    point_x, point_y = labels["mp"][0]
-    abdomen_x, abdomen_y = labels["ma"][0]
-
-    # ---------------------------------------------------------
-    # Body-axis orientation.
-    # ---------------------------------------------------------
-
-    orientation = calculate_angle(
-        head_x,
-        head_y,
-        abdomen_x,
-        abdomen_y
-    )
-
-    # ---------------------------------------------------------
-    # Geometric features.
-    # ---------------------------------------------------------
-
-    head_to_point = calculate_distance(
-        head_x,
-        head_y,
-        point_x,
-        point_y
-    )
-
-    point_to_abdomen = calculate_distance(
-        point_x,
-        point_y,
-        abdomen_x,
-        abdomen_y
-    )
-
-    head_to_abdomen = calculate_distance(
-        head_x,
-        head_y,
-        abdomen_x,
-        abdomen_y
-    )
-
-    head_to_point_angle = calculate_angle(
-        head_x,
-        head_y,
-        point_x,
-        point_y
-    )
-
-    point_to_abdomen_angle = calculate_angle(
-        point_x,
-        point_y,
-        abdomen_x,
-        abdomen_y
-    )
-
-    # ---------------------------------------------------------
-    # Relative angular information.
-    # ---------------------------------------------------------
-
-    angle_difference = (
-        head_to_point_angle -
-        point_to_abdomen_angle
-    )
-
-    # Normalize to [-180, 180].
-    while angle_difference > 180:
-        angle_difference -= 360
-
-    while angle_difference < -180:
-        angle_difference += 360
-
-    features = [
-        head_to_point,
-        point_to_abdomen,
-        head_to_abdomen,
-        head_to_point_angle,
-        point_to_abdomen_angle,
-        angle_difference
-    ]
-
-    return features, orientation
+N_COMPONENTS = 20
 
 
 def build_dataset():
+    """
+    One example per isolated, head/abdomen-annotated fly (both sexes).
 
-    X = []
-    y = []
+    Returns a dict with X (HOG), y (1 = flip), image, session, sex,
+    axis (moment axis angle) and heading (true heading).
+    """
 
-    json_files = sorted(
-        ANNOTATION_DIR.rglob("*.json")
-    )
+    rows = {
+        "X": [], "y": [], "image": [], "session": [],
+        "sex": [], "axis": [], "heading": []
+    }
 
-    print(
-        "JSON files found:",
-        len(json_files)
-    )
+    for item in iter_annotated_images():
 
-    usable = 0
+        labels = item["labels"]
 
-    for json_path in json_files:
+        candidates = find_candidates(item["image"])
 
-        labels = load_annotation(
-            json_path
-        )
+        matched = match_isolated_flies(candidates, labels)
 
-        result = create_features(
-            labels
-        )
+        gray = to_gray(item["image"])
 
-        if result is None:
-            continue
+        for sex, (_, head, abdomen) in FLIES.items():
 
-        features, orientation = result
+            candidate = matched[sex]
 
-        X.append(
-            features
-        )
+            if candidate is None or not labels.get(head) or not labels.get(abdomen):
+                continue
 
-        # -----------------------------------------------------
-        # Two-class formulation:
-        #
-        # 0 = orientation from 0 to <180 degrees
-        # 1 = orientation from 180 to <360 degrees
-        # -----------------------------------------------------
+            heading = heading_from_points(labels[head][0], labels[abdomen][0])
 
-        if orientation < 180:
-            target = 0
-        else:
-            target = 1
+            axis = orientation_from_contour(candidate["contour"])
 
-        y.append(
-            target
-        )
+            rows["X"].append(orientation_features(gray, candidate, axis))
+            rows["y"].append(int(angle_difference(heading, axis) > 90))
+            rows["image"].append(item["image_id"])
+            rows["session"].append(item["session"])
+            rows["sex"].append(sex)
+            rows["axis"].append(axis)
+            rows["heading"].append(heading)
 
-        usable += 1
-
-    return (
-        np.array(X),
-        np.array(y),
-        usable
-    )
+    return {key: np.array(value) for key, value in rows.items()}
 
 
-def main():
+def make_model(n_components=N_COMPONENTS):
 
-    print("=" * 70)
-    print("FRUIT FLY ORIENTATION CLASSIFICATION")
-    print("=" * 70)
-
-    X, y, usable = build_dataset()
-
-    if len(X) == 0:
-
-        print(
-            "\nERROR: No usable annotations found."
-        )
-
-        return
-
-    print(
-        "\nUsable annotated images:",
-        usable
-    )
-
-    print(
-        "Feature matrix:",
-        X.shape
-    )
-
-    print(
-        "\nClass distribution:"
-    )
-
-    print(
-        "0 - orientation < 180°:",
-        np.sum(y == 0)
-    )
-
-    print(
-        "1 - orientation >= 180°:",
-        np.sum(y == 1)
-    )
-
-    # ---------------------------------------------------------
-    # Train/test split.
-    # ---------------------------------------------------------
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.20,
-        random_state=42,
-        stratify=y
-    )
-
-    print(
-        "\nTraining samples:",
-        len(X_train)
-    )
-
-    print(
-        "Testing samples:",
-        len(X_test)
-    )
-
-    # ---------------------------------------------------------
-    # Standardization + PCA + Logistic Regression.
-    # ---------------------------------------------------------
-
-    model = Pipeline([
-        (
-            "scaler",
-            StandardScaler()
-        ),
+    return Pipeline([
         (
             "pca",
             PCA(
-                n_components=0.95,
+                n_components=n_components,
                 random_state=42
             )
         ),
         (
             "classifier",
             LogisticRegression(
-                random_state=42,
-                max_iter=1000
+                max_iter=5000,
+                random_state=42
             )
         )
     ])
 
-    model.fit(
-        X_train,
-        y_train
+
+def predicted_heading(axis, flip):
+
+    return (np.asarray(axis) + 180 * np.asarray(flip)) % 360
+
+
+def angular_errors(heading, axis, flip):
+    """Circular error (deg) of heading = axis + 180 * flip."""
+
+    return np.array([
+        angle_difference(true, predicted)
+        for true, predicted in zip(heading, predicted_heading(axis, flip))
+    ])
+
+
+def evaluate_split(data, train_idx, test_idx, n_components=N_COMPONENTS):
+    """Fit on train_idx; return metrics on test_idx (model + baseline)."""
+
+    y = data["y"]
+
+    model = make_model(n_components)
+
+    model.fit(data["X"][train_idx], y[train_idx])
+
+    flip = model.predict(data["X"][test_idx])
+
+    majority = int(np.mean(y[train_idx]) > 0.5)
+
+    baseline_flip = np.full(len(test_idx), majority)
+
+    errors = angular_errors(data["heading"][test_idx], data["axis"][test_idx], flip)
+
+    baseline_errors = angular_errors(
+        data["heading"][test_idx],
+        data["axis"][test_idx],
+        baseline_flip
     )
 
-    predictions = model.predict(
-        X_test
+    oracle_errors = angular_errors(
+        data["heading"][test_idx],
+        data["axis"][test_idx],
+        y[test_idx]
     )
 
-    accuracy = accuracy_score(
-        y_test,
-        predictions
-    )
+    return {
+        "flip_error": np.mean(flip != y[test_idx]),
+        "angle_mae": np.mean(errors),
+        "angle_median": np.median(errors),
+        "baseline_flip_error": np.mean(baseline_flip != y[test_idx]),
+        "baseline_angle_mae": np.mean(baseline_errors),
+        "axis_only_mae": np.mean(oracle_errors),
+        "flip_pred": flip
+    }
 
-    matrix = confusion_matrix(
-        y_test,
-        predictions,
-        labels=[0, 1]
-    )
 
-    print(
-        "\n" + "=" * 70
-    )
+def main():
 
-    print(
-        "MODEL RESULTS"
-    )
+    print("=" * 70)
+    print("FRUIT FLY ORIENTATION - MOMENTS + HOG/PCA/LOGISTIC FLIP")
+    print("=" * 70)
 
-    print(
-        "=" * 70
-    )
+    data = build_dataset()
 
-    print(
-        "\nAccuracy:",
-        f"{accuracy * 100:.2f}%"
-    )
+    X = data["X"]
+    y = data["y"]
 
-    print(
-        "\nConfusion Matrix:"
-    )
+    print("\nExamples (isolated annotated flies):", len(X))
 
-    print(matrix)
+    for sex in FLIES:
+        print(f"  {sex}: {np.sum(data['sex'] == sex)}")
 
-    print(
-        "\nClassification Report:"
-    )
-
-    print(
-        classification_report(
-            y_test,
-            predictions,
-            labels=[0, 1],
-            target_names=[
-                "0-180 degrees",
-                "180-360 degrees"
-            ],
-            zero_division=0
-        )
-    )
+    print("HOG feature length:", X.shape[1])
+    print("Flip labels: 0 (head = axis):", np.sum(y == 0),
+          " 1 (head = axis + 180):", np.sum(y == 1))
 
     # ---------------------------------------------------------
-    # PCA information.
+    # Hold-out check grouped by image. evaluate.py reports the full
+    # random / GroupKFold / leave-one-session-out results.
     # ---------------------------------------------------------
+
+    splitter = GroupShuffleSplit(
+        n_splits=1,
+        test_size=0.20,
+        random_state=42
+    )
+
+    train_idx, test_idx = next(splitter.split(X, y, groups=data["image"]))
+
+    result = evaluate_split(data, train_idx, test_idx)
+
+    print("\nTraining examples:", len(train_idx))
+    print("Testing examples:", len(test_idx))
+
+    print(f"\n(a) Flip error:              {result['flip_error'] * 100:.2f}%")
+    print(f"(b) Angular error:           mean {result['angle_mae']:.1f} deg, "
+          f"median {result['angle_median']:.1f} deg")
+    print(f"(c) Baseline (majority flip): flip error "
+          f"{result['baseline_flip_error'] * 100:.2f}%, "
+          f"angular error {result['baseline_angle_mae']:.1f} deg")
+    print(f"    Moment axis with perfect flip (lower bound): "
+          f"{result['axis_only_mae']:.1f} deg")
+
+    for sex in FLIES:
+
+        mask = data["sex"][test_idx] == sex
+
+        if mask.any():
+            errors = angular_errors(
+                data["heading"][test_idx][mask],
+                data["axis"][test_idx][mask],
+                result["flip_pred"][mask]
+            )
+            print(f"    {sex}: flip error "
+                  f"{np.mean(result['flip_pred'][mask] != y[test_idx][mask]) * 100:.1f}%, "
+                  f"angular error {np.mean(errors):.1f} deg (n={mask.sum()})")
+
+    # ---------------------------------------------------------
+    # Final model: fit on all examples and save.
+    # ---------------------------------------------------------
+
+    model = make_model()
+
+    model.fit(X, y)
 
     pca = model.named_steps["pca"]
 
-    print(
-        "PCA components:",
-        pca.n_components_
-    )
+    print("\nPCA components:", pca.n_components_)
+    print("Explained variance:",
+          f"{np.sum(pca.explained_variance_ratio_) * 100:.2f}%")
 
-    print(
-        "Explained variance:",
-        f"{np.sum(pca.explained_variance_ratio_) * 100:.2f}%"
-    )
+    save_model(model, MODEL_PATH, __file__)
 
-    # ---------------------------------------------------------
-    # Save model.
-    # ---------------------------------------------------------
-
-    Path("models").mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    save_model(
-        model,
-        MODEL_PATH,
-        __file__
-    )
-
-    print(
-        "\nModel saved to:"
-    )
-
-    print(
-        MODEL_PATH
-    )
-
-    print(
-        "\nOrientation training completed."
-    )
-
-    print(
-        "=" * 70
-    )
+    print("\nModel saved to:", MODEL_PATH)
+    print("=" * 70)
 
 
 if __name__ == "__main__":

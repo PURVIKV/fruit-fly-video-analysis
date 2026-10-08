@@ -1,4 +1,5 @@
 import cv2
+import math
 import time
 import joblib
 import numpy as np
@@ -9,7 +10,11 @@ from src.detection import (
     find_candidates,
     orientation_from_contour
 )
-from src.features import count_features
+from src.features import (
+    count_features,
+    orientation_features,
+    to_gray
+)
 
 
 VIDEO_PATH = "input/videos/test1.mp4"
@@ -103,41 +108,67 @@ def predict_sex(
 
 def predict_orientation(
     model,
-    contour
+    gray,
+    fly
 ):
+    """
+    Heading of the fly (abdomen -> head) in image-coordinate degrees.
 
-    base_angle = orientation_from_contour(
-        contour
+    The moment axis gives the body line; the flip classifier (HOG of the
+    upright patch -> PCA -> LogisticRegression) decides which end is the
+    head. Same feature code as train/train_orientation.py.
+    """
+
+    axis = orientation_from_contour(
+        fly["contour"]
     )
 
-    # The trained orientation model expects
-    # six geometric features. For the video demo,
-    # unavailable landmark features are approximated
-    # from the contour orientation.
+    features = orientation_features(
+        gray,
+        fly,
+        axis
+    )
 
-    features = np.array([[
-        1.0,
-        1.0,
-        1.0,
-        base_angle,
-        base_angle,
-        0.0
-    ]])
-
-    try:
-
-        prediction = model.predict(
-            features
+    flip = int(
+        model.predict(
+            features.reshape(1, -1)
         )[0]
+    )
 
-        if prediction == 1:
-            return base_angle + 180
+    return (axis + 180 * flip) % 360
 
-        return base_angle
 
-    except Exception:
+def display_angle(heading):
+    """Image-coordinate heading -> counter-clockwise degrees (y up)."""
 
-        return base_angle
+    return (-heading) % 360
+
+
+def draw_heading(
+    image,
+    fly,
+    heading,
+    length=60
+):
+
+    start = (
+        int(fly["center_x"]),
+        int(fly["center_y"])
+    )
+
+    end = (
+        int(start[0] + length * math.cos(math.radians(heading))),
+        int(start[1] + length * math.sin(math.radians(heading)))
+    )
+
+    cv2.arrowedLine(
+        image,
+        start,
+        end,
+        (0, 0, 255),
+        2,
+        tipLength=0.3
+    )
 
 
 def predict_wing_angle(
@@ -191,6 +222,8 @@ def draw_results(
 
     result = frame.copy()
 
+    gray = to_gray(frame)
+
     for index, fly in enumerate(flies):
 
         contour = fly["contour"]
@@ -222,9 +255,16 @@ def draw_results(
                 fly
             )
 
-            orientation = predict_orientation(
+            heading = predict_orientation(
                 models["orientation"],
-                contour
+                gray,
+                fly
+            )
+
+            draw_heading(
+                result,
+                fly,
+                heading
             )
 
             wing_angle = predict_wing_angle(
@@ -235,7 +275,7 @@ def draw_results(
             information = [
                 f"Fly {index + 1}",
                 f"Sex: {sex}",
-                f"Orientation: {orientation:.1f} deg",
+                f"Orientation: {display_angle(heading):.1f} deg",
                 f"Wing angle: {wing_angle:.1f} deg"
             ]
 
