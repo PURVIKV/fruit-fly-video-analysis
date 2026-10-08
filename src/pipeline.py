@@ -2,6 +2,8 @@ import cv2
 import json
 import math
 import platform
+import shlex
+import shutil
 import subprocess
 import time
 import joblib
@@ -207,6 +209,122 @@ def predict_wing_angle(
     return float(angles[0]), float(angles[1])
 
 
+LABEL_FONT = cv2.FONT_HERSHEY_SIMPLEX
+LABEL_SCALE = 0.7
+LABEL_THICKNESS = 2
+LABEL_PADDING = 6
+LABEL_LINE_GAP = 8
+
+
+def overlaps(a, b):
+    """True if rectangles a and b, given as (left, top, right, bottom), overlap."""
+
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def draw_text_block(
+    image,
+    lines,
+    box,
+    placed=None
+):
+    """
+    Draw white text lines on a filled dark rectangle next to a fly.
+
+    The block goes just above the fly's bounding box (x, y, w, h), or
+    below it if there is no room above or that spot overlaps a block in
+    `placed` (blocks already drawn in this frame). If both spots are
+    taken it is pushed down until it is clear. It is always clamped
+    fully inside the frame, and its rectangle is appended to `placed`.
+    """
+
+    if placed is None:
+        placed = []
+
+    frame_height, frame_width = image.shape[:2]
+
+    sizes = [
+        cv2.getTextSize(
+            text,
+            LABEL_FONT,
+            LABEL_SCALE,
+            LABEL_THICKNESS
+        )[0]
+        for text in lines
+    ]
+
+    line_height = max(size[1] for size in sizes) + LABEL_LINE_GAP
+
+    block_width = max(size[0] for size in sizes) + 2 * LABEL_PADDING
+    block_height = line_height * len(lines) + 2 * LABEL_PADDING
+
+    x, y, w, h = box
+
+    left = min(max(x, 0), frame_width - block_width)
+
+    def rect(top):
+        top = min(max(top, 0), frame_height - block_height)
+        return (left, top, left + block_width, top + block_height)
+
+    above = y - block_height - 6
+    below = y + h + 6
+
+    candidates = [rect(below), rect(above)] if above < 0 else [rect(above), rect(below)]
+
+    chosen = next(
+        (
+            candidate for candidate in candidates
+            if not any(overlaps(candidate, other) for other in placed)
+        ),
+        None
+    )
+
+    if chosen is None:
+
+        chosen = candidates[0]
+
+        while any(overlaps(chosen, other) for other in placed):
+
+            lowest = max(other[3] for other in placed if overlaps(chosen, other))
+
+            if lowest + 2 + block_height > frame_height:
+                break
+
+            chosen = rect(lowest + 2)
+
+    placed.append(chosen)
+
+    left, top = chosen[0], chosen[1]
+
+    cv2.rectangle(
+        image,
+        (left, top),
+        (left + block_width, top + block_height),
+        (30, 30, 30),
+        -1
+    )
+
+    for line_number, text in enumerate(lines):
+
+        baseline_y = (
+            top +
+            LABEL_PADDING +
+            (line_number + 1) * line_height -
+            LABEL_LINE_GAP // 2
+        )
+
+        cv2.putText(
+            image,
+            text,
+            (left + LABEL_PADDING, baseline_y),
+            LABEL_FONT,
+            LABEL_SCALE,
+            (255, 255, 255),
+            LABEL_THICKNESS,
+            cv2.LINE_AA
+        )
+
+
 def draw_results(
     frame,
     flies,
@@ -215,6 +333,8 @@ def draw_results(
 ):
 
     result = frame.copy()
+
+    placed_labels = []
 
     gray = to_gray(frame)
 
@@ -327,29 +447,12 @@ def draw_results(
         # Text
         # -----------------------------------------------------
 
-        label_y = max(
-            y - 100,
-            20
+        draw_text_block(
+            result,
+            information,
+            (x, y, w, h),
+            placed_labels
         )
-
-        for line_number, text in enumerate(
-            information
-        ):
-
-            cv2.putText(
-                result,
-                text,
-                (
-                    x,
-                    label_y +
-                    line_number * 22
-                ),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA
-            )
 
     # ---------------------------------------------------------
     # Main information panel
@@ -388,6 +491,40 @@ def draw_results(
     return result
 
 
+def reencode_h264(path):
+    """
+    Re-encode a video to H.264 / yuv420p (plays in PowerPoint, browsers
+    and QuickTime) with ffmpeg. If ffmpeg is not installed, print the
+    exact command instead. Returns the new path, or None.
+    """
+
+    source = Path(path)
+    target = source.with_name(source.stem + "_h264.mp4")
+
+    command = [
+        "ffmpeg", "-y",
+        "-i", str(source),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-crf", "20",
+        "-preset", "medium",
+        "-movflags", "+faststart",
+        str(target)
+    ]
+
+    if shutil.which("ffmpeg") is None:
+        print("\nffmpeg is not installed. To make an H.264 copy, install it")
+        print("(e.g. brew install ffmpeg) and run:")
+        print("  " + shlex.join(command))
+        return None
+
+    print("\nRe-encoding to H.264:", target)
+
+    subprocess.run(command, check=True, capture_output=True)
+
+    return target
+
+
 def machine_description():
 
     cpu = platform.processor() or "unknown CPU"
@@ -412,7 +549,8 @@ def machine_description():
 def main(
     video_path=VIDEO_PATH,
     max_frames=None,
-    display=True
+    display=True,
+    h264=False
 ):
     """
     Run all models on a video and write the annotated output.
@@ -579,15 +717,10 @@ def main(
             else 0
         )
 
-        cv2.putText(
+        draw_text_block(
             result,
-            f"Processing FPS: {processing_fps:.1f}",
-            (20, height - 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (0, 255, 255),
-            2,
-            cv2.LINE_AA
+            [f"Processing FPS: {processing_fps:.1f}"],
+            (10, height, 0, 0)
         )
 
         writer.write(
@@ -675,6 +808,9 @@ def main(
 
     with open(STATS_PATH, "w", encoding="utf-8") as file:
         json.dump(stats, file, indent=2)
+
+    if h264:
+        reencode_h264(OUTPUT_PATH)
 
     print(
         "Output video:",

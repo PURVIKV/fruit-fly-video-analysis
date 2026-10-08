@@ -6,6 +6,7 @@ Main entry point for the project.
     python main.py                      # full test1.mp4 with preview window
     python main.py --max-frames 50      # quick smoke test
     python main.py --no-display         # headless
+    python main.py --h264               # also write an H.264 copy (needs ffmpeg)
 """
 
 import argparse
@@ -38,6 +39,13 @@ def parse_args():
         help="do not open the preview window"
     )
 
+    parser.add_argument(
+        "--h264",
+        action="store_true",
+        help="re-encode the output to H.264 yuv420p with ffmpeg "
+             "(prints the command if ffmpeg is missing)"
+    )
+
     return parser.parse_args()
 
 
@@ -48,5 +56,6 @@ if __name__ == "__main__":
     run_pipeline(
         video_path=args.video,
         max_frames=args.max_frames,
-        display=not args.no_display
+        display=not args.no_display,
+        h264=args.h264
     )
