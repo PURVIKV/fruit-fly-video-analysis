@@ -1,93 +1,62 @@
-import json
+"""
+Image-based male wing angle regression.
+
+Target (unchanged from the original script, so numbers stay comparable):
+the acute angle (0-90 deg) between the body axis (head mh -> abdomen ma)
+and the line from the male body point mp to the wing tip mw.
+
+Features (frame only): the male patch is rotated upright, split into
+right / left halves, and the left half is mirrored so one regressor
+serves both wings; HOG -> PCA -> LinearRegression (Ridge also reported).
+Each annotated wing tip is assigned to a half by the sign of the cross
+product of the body axis with (wing tip - centroid); if both tips fall
+on the same side, the one further right is called right.
+
+Training uses patches oriented with the ground-truth heading. The
+end-to-end error orients the patch with the predicted heading from the
+orientation model instead (moment axis + flip classifier), as the
+pipeline does.
+"""
+
 import math
 import sys
-import numpy as np
 
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np
+
+from sklearn.model_selection import GroupShuffleSplit
+from sklearn.pipeline import Pipeline
+from sklearn.decomposition import PCA
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+from src.annotations import iter_annotated_images, match_isolated_flies
+from src.detection import find_candidates, orientation_from_contour
+from src.features import (
+    angle_difference,
+    heading_from_points,
+    orientation_features,
+    to_gray,
+    wing_features,
+    wing_side
+)
 from src.model_io import save_model
 
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import (
-    mean_absolute_error,
-    mean_squared_error
-)
 
-
-ANNOTATION_DIR = Path("input/images")
 MODEL_PATH = "models/wing_angle_model.pkl"
 
+N_COMPONENTS = 80
 
-def load_annotation(json_path):
-    """Read annotation points from a JSON file."""
-
-    with open(
-        json_path,
-        "r",
-        encoding="utf-8"
-    ) as file:
-
-        data = json.load(file)
-
-    labels = {}
-
-    for shape in data.get("shapes", []):
-
-        label = shape.get("label")
-        points = shape.get("points", [])
-
-        if not points:
-            continue
-
-        x, y = points[0]
-
-        if label not in labels:
-            labels[label] = []
-
-        labels[label].append(
-            (x, y)
-        )
-
-    return labels
+RIDGE_ALPHA = 10.0
 
 
-def calculate_distance(
-    x1,
-    y1,
-    x2,
-    y2
-):
-    return math.sqrt(
-        (x2 - x1) ** 2 +
-        (y2 - y1) ** 2
-    )
+def calculate_angle(x1, y1, x2, y2):
+    """Angle of the vector from point 1 to point 2 (y axis up), 0-360."""
 
-
-def calculate_angle(
-    x1,
-    y1,
-    x2,
-    y2
-):
-    """
-    Calculate the angle of a vector.
-    """
-
-    dx = x2 - x1
-    dy = y2 - y1
-
-    angle = math.degrees(
-        math.atan2(
-            -dy,
-            dx
-        )
-    )
+    angle = math.degrees(math.atan2(-(y2 - y1), x2 - x1))
 
     if angle < 0:
         angle += 360
@@ -95,23 +64,10 @@ def calculate_angle(
     return angle
 
 
-def calculate_wing_angle(
-    body_angle,
-    wing_angle
-):
-    """
-    Calculate the acute angle between the
-    body axis and wing direction.
+def calculate_wing_angle(body_angle, wing_angle):
+    """Acute angle between the body axis and the wing line, 0-90 deg."""
 
-    Result is restricted to 0-90 degrees.
-    """
-
-    difference = abs(
-        wing_angle -
-        body_angle
-    )
-
-    difference = difference % 360
+    difference = abs(wing_angle - body_angle) % 360
 
     if difference > 180:
         difference = 360 - difference
@@ -122,478 +78,290 @@ def calculate_wing_angle(
     return difference
 
 
-def create_features(
-    labels,
-    wing_point
-):
-    """
-    Create geometric features for one wing.
-    """
+def wing_targets(labels):
+    """Target angle for each of the first two annotated wing tips."""
 
-    if (
-        not labels.get("mh")
-        or not labels.get("mp")
-        or not labels.get("ma")
-    ):
-        return None
+    body_angle = calculate_angle(*labels["mh"][0], *labels["ma"][0])
 
-    head_x, head_y = labels["mh"][0]
-    point_x, point_y = labels["mp"][0]
-    abdomen_x, abdomen_y = labels["ma"][0]
-
-    wing_x, wing_y = wing_point
-
-    # ---------------------------------------------------------
-    # Body geometry.
-    # ---------------------------------------------------------
-
-    body_length = calculate_distance(
-        head_x,
-        head_y,
-        abdomen_x,
-        abdomen_y
-    )
-
-    head_to_point = calculate_distance(
-        head_x,
-        head_y,
-        point_x,
-        point_y
-    )
-
-    point_to_abdomen = calculate_distance(
-        point_x,
-        point_y,
-        abdomen_x,
-        abdomen_y
-    )
-
-    # ---------------------------------------------------------
-    # Wing geometry.
-    # ---------------------------------------------------------
-
-    wing_distance = calculate_distance(
-        point_x,
-        point_y,
-        wing_x,
-        wing_y
-    )
-
-    wing_to_head_distance = calculate_distance(
-        head_x,
-        head_y,
-        wing_x,
-        wing_y
-    )
-
-    wing_to_abdomen_distance = calculate_distance(
-        abdomen_x,
-        abdomen_y,
-        wing_x,
-        wing_y
-    )
-
-    body_angle = calculate_angle(
-        head_x,
-        head_y,
-        abdomen_x,
-        abdomen_y
-    )
-
-    wing_angle = calculate_angle(
-        point_x,
-        point_y,
-        wing_x,
-        wing_y
-    )
-
-    relative_angle = (
-        wing_angle -
-        body_angle
-    )
-
-    while relative_angle > 180:
-        relative_angle -= 360
-
-    while relative_angle < -180:
-        relative_angle += 360
-
-    # ---------------------------------------------------------
-    # Normalized features.
-    # ---------------------------------------------------------
-
-    if body_length > 0:
-
-        normalized_wing_distance = (
-            wing_distance /
-            body_length
+    return [
+        calculate_wing_angle(
+            body_angle,
+            calculate_angle(*labels["mp"][0], *wing)
         )
-
-        normalized_head_distance = (
-            wing_to_head_distance /
-            body_length
-        )
-
-        normalized_abdomen_distance = (
-            wing_to_abdomen_distance /
-            body_length
-        )
-
-    else:
-
-        normalized_wing_distance = 0
-        normalized_head_distance = 0
-        normalized_abdomen_distance = 0
-
-    features = [
-        body_length,
-        head_to_point,
-        point_to_abdomen,
-        normalized_wing_distance,
-        normalized_head_distance,
-        normalized_abdomen_distance,
-        math.sin(math.radians(relative_angle)),
-        math.cos(math.radians(relative_angle))
+        for wing in labels["mw"][:2]
     ]
 
-    target = calculate_wing_angle(
-        body_angle,
-        wing_angle
-    )
 
-    return features, target
+def side_targets(center, heading, wings, targets):
+    """[right target, left target] relative to the given heading."""
+
+    sides = [wing_side(center, heading, wing) for wing in wings]
+
+    right = int(np.argmax(sides))
+
+    return [targets[right], targets[1 - right]]
 
 
 def build_dataset():
+    """
+    One entry per isolated male fly with head, abdomen, body point and
+    two wing tips. Per fly (arrays of shape (n_flies, 2, d) hold the
+    [right, left-mirrored] halves):
 
-    X = []
-    y = []
+      X_gt, y_gt        halves / targets with the ground-truth heading
+      X_h0, y_h0        ... with heading = moment axis
+      X_h180, y_h180    ... with heading = moment axis + 180
+      X_orient, axis, flip   orientation features / labels of the fly
+      image, session
+    """
 
-    json_files = sorted(
-        ANNOTATION_DIR.rglob("*.json")
-    )
+    rows = {
+        key: [] for key in [
+            "X_gt", "y_gt", "X_h0", "y_h0", "X_h180", "y_h180",
+            "X_orient", "axis", "flip", "image", "session"
+        ]
+    }
 
-    print(
-        "JSON files found:",
-        len(json_files)
-    )
+    for item in iter_annotated_images():
 
-    usable_images = 0
-    images_missing_wings = 0
-    images_missing_body = 0
-
-    for json_path in json_files:
-
-        labels = load_annotation(
-            json_path
-        )
+        labels = item["labels"]
 
         if (
             not labels.get("mh")
-            or not labels.get("mp")
             or not labels.get("ma")
+            or not labels.get("mp")
+            or len(labels.get("mw", [])) < 2
         ):
-
-            images_missing_body += 1
             continue
 
-        wing_points = labels.get(
-            "mw",
-            []
-        )
+        candidate = match_isolated_flies(
+            find_candidates(item["image"]),
+            labels
+        )["male"]
 
-        if len(wing_points) < 2:
-
-            images_missing_wings += 1
+        if candidate is None:
             continue
 
-        usable_images += 1
+        gray = to_gray(item["image"])
 
-        # -----------------------------------------------------
-        # Create one regression example for each wing.
-        # -----------------------------------------------------
+        center = (candidate["center_x"], candidate["center_y"])
 
-        for wing_point in wing_points[:2]:
+        wings = labels["mw"][:2]
 
-            result = create_features(
-                labels,
-                wing_point
-            )
+        targets = wing_targets(labels)
 
-            if result is None:
-                continue
+        heading = heading_from_points(labels["mh"][0], labels["ma"][0])
 
-            features, target = result
+        axis = orientation_from_contour(candidate["contour"])
 
-            X.append(
-                features
-            )
+        for key, used_heading in [
+            ("gt", heading),
+            ("h0", axis),
+            ("h180", axis + 180)
+        ]:
+            rows["X_" + key].append(wing_features(gray, candidate, used_heading))
+            rows["y_" + key].append(side_targets(center, used_heading, wings, targets))
 
-            y.append(
-                target
-            )
+        rows["X_orient"].append(orientation_features(gray, candidate, axis))
+        rows["axis"].append(axis)
+        rows["flip"].append(int(angle_difference(heading, axis) > 90))
+        rows["image"].append(item["image_id"])
+        rows["session"].append(item["session"])
 
-    return (
-        np.array(X),
-        np.array(y),
-        usable_images,
-        images_missing_wings,
-        images_missing_body
-    )
+    return {key: np.array(value) for key, value in rows.items()}
 
 
-def main():
+def flatten(data, fly_idx, key="gt"):
+    """(X, y) rows for both halves of the given flies."""
 
-    print("=" * 70)
-    print("FRUIT FLY WING ANGLE REGRESSION")
-    print("=" * 70)
+    X = data["X_" + key][fly_idx]
+    y = data["y_" + key][fly_idx]
 
-    (
-        X,
-        y,
-        usable_images,
-        missing_wings,
-        missing_body
-    ) = build_dataset()
+    return X.reshape(-1, X.shape[-1]), y.reshape(-1)
 
-    if len(X) == 0:
 
-        print(
-            "\nERROR: No usable wing annotations found."
-        )
+def make_model(n_components=N_COMPONENTS, regressor="linear"):
 
-        return
+    if regressor == "ridge":
+        final = Ridge(alpha=RIDGE_ALPHA)
+    else:
+        final = LinearRegression()
 
-    print(
-        "\nImages with usable wing annotations:",
-        usable_images
-    )
-
-    print(
-        "Images missing wing annotations:",
-        missing_wings
-    )
-
-    print(
-        "Images missing body annotations:",
-        missing_body
-    )
-
-    print(
-        "Total regression examples:",
-        len(X)
-    )
-
-    print(
-        "Feature matrix:",
-        X.shape
-    )
-
-    print(
-        "\nTarget wing-angle range:"
-    )
-
-    print(
-        "Minimum:",
-        f"{np.min(y):.2f} degrees"
-    )
-
-    print(
-        "Maximum:",
-        f"{np.max(y):.2f} degrees"
-    )
-
-    # ---------------------------------------------------------
-    # Train/test split.
-    # ---------------------------------------------------------
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.20,
-        random_state=42
-    )
-
-    print(
-        "\nTraining examples:",
-        len(X_train)
-    )
-
-    print(
-        "Testing examples:",
-        len(X_test)
-    )
-
-    # ---------------------------------------------------------
-    # StandardScaler + PCA + Linear Regression.
-    # ---------------------------------------------------------
-
-    model = Pipeline([
-        (
-            "scaler",
-            StandardScaler()
-        ),
+    return Pipeline([
         (
             "pca",
             PCA(
-                n_components=0.95,
+                n_components=n_components,
                 random_state=42
             )
         ),
         (
             "regressor",
-            LinearRegression()
+            final
         )
     ])
 
-    model.fit(
-        X_train,
-        y_train
-    )
 
-    predictions = model.predict(
-        X_test
-    )
+def predict_angles(model, X):
 
-    # Keep predictions within physical range.
-    predictions = np.clip(
-        predictions,
-        0,
-        90
-    )
+    return np.clip(model.predict(X), 0, 90)
 
-    # ---------------------------------------------------------
-    # Evaluation.
-    # ---------------------------------------------------------
 
-    mae = mean_absolute_error(
-        y_test,
-        predictions
-    )
+def regression_metrics(y_true, y_pred):
 
-    rmse = np.sqrt(
-        mean_squared_error(
+    return {
+        "mae": mean_absolute_error(y_true, y_pred),
+        "rmse": math.sqrt(mean_squared_error(y_true, y_pred))
+    }
+
+
+def evaluate_split(
+    data,
+    train_idx,
+    test_idx,
+    n_components=N_COMPONENTS,
+    regressor="linear",
+    orientation_model=None
+):
+    """
+    Fit on the train flies (ground-truth-oriented halves) and report the
+    test error with ground-truth orientation, a train-mean baseline and,
+    if an orientation model (already fit without the test flies) is
+    given, the end-to-end error with the predicted orientation.
+    """
+
+    X_train, y_train = flatten(data, train_idx)
+    X_test, y_test = flatten(data, test_idx)
+
+    model = make_model(n_components, regressor)
+
+    model.fit(X_train, y_train)
+
+    result = {
+        "gt": regression_metrics(y_test, predict_angles(model, X_test)),
+        "baseline": regression_metrics(
             y_test,
-            predictions
+            np.full(len(y_test), np.mean(y_train))
         )
-    )
+    }
 
-    absolute_errors = np.abs(
-        y_test -
-        predictions
-    )
+    if orientation_model is not None:
 
-    max_error = np.max(
-        absolute_errors
-    )
+        flip = orientation_model.predict(data["X_orient"][test_idx])
 
-    std_error = np.std(
-        y_test -
-        predictions
-    )
+        X_h0, y_h0 = data["X_h0"][test_idx], data["y_h0"][test_idx]
+        X_h180, y_h180 = data["X_h180"][test_idx], data["y_h180"][test_idx]
 
-    print(
-        "\n" + "=" * 70
-    )
+        choose = flip.astype(bool)[:, None, None]
 
-    print(
-        "MODEL RESULTS"
-    )
+        X_pred = np.where(choose, X_h180, X_h0)
+        y_pred_side = np.where(choose[:, :, 0], y_h180, y_h0)
 
-    print(
-        "=" * 70
-    )
+        result["end_to_end"] = regression_metrics(
+            y_pred_side.reshape(-1),
+            predict_angles(model, X_pred.reshape(-1, X_pred.shape[-1]))
+        )
 
-    print(
-        "\nMean Absolute Error:",
-        f"{mae:.2f} degrees"
-    )
+        result["flip_error"] = np.mean(flip != data["flip"][test_idx])
 
-    print(
-        "Root Mean Squared Error:",
-        f"{rmse:.2f} degrees"
-    )
+    return result
 
-    print(
-        "Standard Error:",
-        f"{std_error:.2f} degrees"
-    )
 
-    print(
-        "Maximum Absolute Error:",
-        f"{max_error:.2f} degrees"
-    )
+def fit_orientation_without(orient_data, test_groups, group_key):
+    """Orientation model fit on the orientation examples outside test_groups."""
+
+    from train.train_orientation import make_model as make_orientation_model
+
+    keep = ~np.isin(orient_data[group_key], list(test_groups))
+
+    model = make_orientation_model()
+
+    model.fit(orient_data["X"][keep], orient_data["y"][keep])
+
+    return model
+
+
+def main():
+
+    from train.train_orientation import build_dataset as build_orientation_dataset
+
+    print("=" * 70)
+    print("FRUIT FLY MALE WING ANGLE - UPRIGHT HALF PATCH HOG/PCA REGRESSION")
+    print("=" * 70)
+
+    data = build_dataset()
+
+    n_flies = len(data["image"])
+
+    X_all, y_all = flatten(data, np.arange(n_flies))
+
+    print("\nIsolated male flies with two wing tips:", n_flies)
+    print("Regression examples (one per wing):", len(X_all))
+    print("HOG feature length per half:", X_all.shape[1])
+    print(f"Target: mean {np.mean(y_all):.1f} deg, std {np.std(y_all):.1f} deg")
 
     # ---------------------------------------------------------
-    # PCA information.
+    # Hold-out check grouped by image (both wings of a fly stay
+    # together). evaluate.py reports the full CV results.
     # ---------------------------------------------------------
+
+    splitter = GroupShuffleSplit(
+        n_splits=1,
+        test_size=0.20,
+        random_state=42
+    )
+
+    train_idx, test_idx = next(
+        splitter.split(data["image"], groups=data["image"])
+    )
+
+    orientation_model = fit_orientation_without(
+        build_orientation_dataset(),
+        set(data["image"][test_idx]),
+        "image"
+    )
+
+    print("\nTraining flies:", len(train_idx), " wings:", 2 * len(train_idx))
+    print("Testing flies:", len(test_idx), " wings:", 2 * len(test_idx))
+
+    for regressor in ["linear", "ridge"]:
+
+        result = evaluate_split(
+            data,
+            train_idx,
+            test_idx,
+            regressor=regressor,
+            orientation_model=orientation_model
+        )
+
+        print(f"\n{regressor}:")
+        print(f"  ground-truth orientation: MAE {result['gt']['mae']:.2f} deg, "
+              f"RMSE {result['gt']['rmse']:.2f} deg")
+        print(f"  predicted orientation:    MAE {result['end_to_end']['mae']:.2f} deg, "
+              f"RMSE {result['end_to_end']['rmse']:.2f} deg "
+              f"(flip error {result['flip_error'] * 100:.1f}%)")
+
+    print(f"\nBaseline (predict train mean): MAE {result['baseline']['mae']:.2f} deg, "
+          f"RMSE {result['baseline']['rmse']:.2f} deg")
+
+    # ---------------------------------------------------------
+    # Final model: LinearRegression on all flies.
+    # ---------------------------------------------------------
+
+    model = make_model()
+
+    model.fit(X_all, y_all)
 
     pca = model.named_steps["pca"]
 
-    print(
-        "\nPCA components:",
-        pca.n_components_
-    )
+    print("\nPCA components:", pca.n_components_)
+    print("Explained variance:",
+          f"{np.sum(pca.explained_variance_ratio_) * 100:.2f}%")
 
-    print(
-        "Explained variance:",
-        f"{np.sum(pca.explained_variance_ratio_) * 100:.2f}%"
-    )
+    save_model(model, MODEL_PATH, __file__)
 
-    # ---------------------------------------------------------
-    # Example predictions.
-    # ---------------------------------------------------------
-
-    print(
-        "\nSample predictions:"
-    )
-
-    for actual, predicted in zip(
-        y_test[:10],
-        predictions[:10]
-    ):
-
-        error = abs(
-            actual -
-            predicted
-        )
-
-        print(
-            f"Actual: {actual:6.2f}° | "
-            f"Predicted: {predicted:6.2f}° | "
-            f"Error: {error:6.2f}°"
-        )
-
-    # ---------------------------------------------------------
-    # Save model.
-    # ---------------------------------------------------------
-
-    Path("models").mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    save_model(
-        model,
-        MODEL_PATH,
-        __file__
-    )
-
-    print(
-        "\nModel saved to:"
-    )
-
-    print(
-        MODEL_PATH
-    )
-
-    print(
-        "\nWing-angle training completed."
-    )
-
-    print(
-        "=" * 70
-    )
+    print("\nModel saved to:", MODEL_PATH)
+    print("=" * 70)
 
 
 if __name__ == "__main__":

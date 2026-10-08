@@ -36,6 +36,7 @@ def count_features(candidate):
 
 PATCH_PX = 240           # side of the square crop in frame pixels
 PATCH_OUT = 96           # crop is resized to PATCH_OUT x PATCH_OUT
+WING_PATCH_PX = 288      # larger crop so spread wing tips stay inside
 HOG_PARAMS = {
     "orientations": 9,
     "pixels_per_cell": (12, 12),
@@ -68,14 +69,14 @@ def angle_difference(a, b):
     return min(difference, 360 - difference)
 
 
-def patch_transform(center, heading):
+def patch_transform(center, heading, patch_px=PATCH_PX):
     """
     2x3 affine matrix mapping frame pixels to the upright patch: the
     point `center` goes to the patch centre and the direction `heading`
     points up (towards row 0). Coordinates are in the resized patch.
     """
 
-    scale = PATCH_OUT / PATCH_PX
+    scale = PATCH_OUT / patch_px
 
     # cv2 rotates counter-clockwise on screen for positive angles, which
     # subtracts from an image-coordinate angle; heading -> -90 (up).
@@ -91,12 +92,12 @@ def patch_transform(center, heading):
     return matrix
 
 
-def upright_patch(gray, center, heading):
+def upright_patch(gray, center, heading, patch_px=PATCH_PX):
     """Fixed-size grayscale patch around center, rotated so heading is up."""
 
     return cv2.warpAffine(
         gray,
-        patch_transform(center, heading),
+        patch_transform(center, heading, patch_px),
         (PATCH_OUT, PATCH_OUT),
         flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_REPLICATE
@@ -118,3 +119,35 @@ def orientation_features(gray, candidate, axis_angle):
     center = (candidate["center_x"], candidate["center_y"])
 
     return hog_features(upright_patch(gray, center, axis_angle))
+
+
+def wing_side(center, heading, point):
+    """
+    Signed cross product of the heading direction with (point - center),
+    in image coordinates. Positive = the fly's right-hand side of the
+    upright patch (patch column > centre), negative = left.
+    """
+
+    ux = math.cos(math.radians(heading))
+    uy = math.sin(math.radians(heading))
+
+    return ux * (point[1] - center[1]) - uy * (point[0] - center[0])
+
+
+def wing_features(gray, candidate, heading):
+    """
+    HOG of the right half and of the mirrored left half of the upright
+    male patch. Mirroring makes a left wing look like a right wing, so
+    one regressor serves both. Returns (right, left).
+    """
+
+    center = (candidate["center_x"], candidate["center_y"])
+
+    patch = upright_patch(gray, center, heading, WING_PATCH_PX)
+
+    half = PATCH_OUT // 2
+
+    right = patch[:, half:]
+    left = np.fliplr(patch[:, :half])
+
+    return hog_features(right), hog_features(left)

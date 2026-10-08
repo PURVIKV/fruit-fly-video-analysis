@@ -13,7 +13,8 @@ from src.detection import (
 from src.features import (
     count_features,
     orientation_features,
-    to_gray
+    to_gray,
+    wing_features
 )
 
 
@@ -173,44 +174,33 @@ def draw_heading(
 
 def predict_wing_angle(
     model,
-    fly
+    gray,
+    fly,
+    heading
 ):
+    """
+    Right and left wing angles (deg, 0-90) of a male fly.
 
-    # The training model expects geometric wing
-    # features that are not directly available
-    # from a simple contour.
-    #
-    # Use a neutral approximation for the video
-    # integration layer.
+    The patch is rotated upright with the predicted heading, split into
+    halves (left half mirrored), and each half goes through
+    HOG -> PCA -> LinearRegression, as in train/train_wing_angle.py.
+    """
 
-    features = np.array([[
-        fly["height"],
-        fly["height"] * 0.5,
-        fly["height"] * 0.5,
-        0.5,
-        0.5,
-        0.5,
-        0.0,
-        1.0
-    ]])
+    right, left = wing_features(
+        gray,
+        fly,
+        heading
+    )
 
-    try:
+    angles = np.clip(
+        model.predict(
+            np.array([right, left])
+        ),
+        0,
+        90
+    )
 
-        prediction = model.predict(
-            features
-        )[0]
-
-        return float(
-            np.clip(
-                prediction,
-                0,
-                90
-            )
-        )
-
-    except Exception:
-
-        return 0.0
+    return float(angles[0]), float(angles[1])
 
 
 def draw_results(
@@ -267,16 +257,31 @@ def draw_results(
                 heading
             )
 
-            wing_angle = predict_wing_angle(
-                models["wing"],
-                fly
-            )
+            # The wing model is trained on male flies only.
+
+            if sex == "Male":
+
+                right_wing, left_wing = predict_wing_angle(
+                    models["wing"],
+                    gray,
+                    fly,
+                    heading
+                )
+
+                wing_text = (
+                    f"Wings R/L: {right_wing:.0f} / "
+                    f"{left_wing:.0f} deg"
+                )
+
+            else:
+
+                wing_text = "Wings: n/a (female)"
 
             information = [
                 f"Fly {index + 1}",
                 f"Sex: {sex}",
                 f"Orientation: {display_angle(heading):.1f} deg",
-                f"Wing angle: {wing_angle:.1f} deg"
+                wing_text
             ]
 
         else:
