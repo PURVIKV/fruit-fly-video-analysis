@@ -28,3 +28,5 @@ results/videos/*.mp4
 # OS files
 .DS_Store
 Thumbs.db
+# Debug output (per-frame CSVs, failure frames)
+results/debug/
