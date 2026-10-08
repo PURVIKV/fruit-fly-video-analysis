@@ -1,7 +1,9 @@
-numpy
-pandas
-matplotlib
-scikit-learn
-scikit-image
-opencv-python
-joblib
+# Tested with Python 3.11.17 (conda env cs229-project)
+numpy==2.4.6
+pandas==3.0.6
+matplotlib==3.11.2
+scikit-learn==1.9.1
+scikit-image==0.26.0
+scipy==1.17.1
+opencv-python==4.14.0.94
+joblib==1.6.0
