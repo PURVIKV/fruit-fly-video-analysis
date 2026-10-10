@@ -10,6 +10,8 @@ input/videos/test*.mp4 this runs the current detector + count model
   - frames decoded vs. the frame count in the file's metadata
   - % of frames whose predicted count == 2, and the count distribution
   - the longest run of consecutive wrong frames
+  - frames with a touching-flies contour (predicted to hold 2 flies):
+    counted correctly, but no sex / orientation / wing is predicted
 
 Outputs:
     results/metrics/video_counts.md
@@ -159,7 +161,8 @@ def count_video(video_path, count_model):
             "time_s": round(len(rows) / capture.get(cv2.CAP_PROP_FPS), 3),
             "contours": len(candidates),
             "count": count,
-            "correct": count == TRUE_COUNT
+            "correct": count == TRUE_COUNT,
+            "touching": any(c["fly_count"] == 2 for c in candidates)
         })
 
     capture.release()
@@ -211,6 +214,8 @@ def evaluate_videos(count_model, video_dir=VIDEO_DIR):
 
         run_length, run_start = longest_wrong_run(correct)
 
+        touching = np.array([row["touching"] for row in rows])
+
         summaries.append({
             "video": video_path.stem,
             "held_out": HELD_OUT.get(video_path.stem, HELD_OUT_DEFAULT),
@@ -222,6 +227,8 @@ def evaluate_videos(count_model, video_dir=VIDEO_DIR):
             "count_1": int(np.sum(counts == 1)),
             "count_2": int(np.sum(counts == 2)),
             "count_3plus": int(np.sum(counts >= 3)),
+            "touching_frames": int(touching.sum()),
+            "touching_pct": 100 * touching.mean(),
             "longest_wrong_run": run_length,
             "longest_wrong_run_s": run_length / fps,
             "longest_wrong_run_start": run_start
@@ -335,8 +342,8 @@ def write_report(summary, examples):
         f"Detector: `{DETECTOR}`. Count model: `{FLY_COUNT_MODEL}`.",
         "",
         "| Video | Held out? | Metadata frames | Edit-list skipped | Decoded | "
-        "Count == 2 | 0 / 1 / 2 / 3+ | Longest wrong run |",
-        "|---|---|---|---|---|---|---|---|"
+        "Count == 2 | 0 / 1 / 2 / 3+ | Longest wrong run | Touching-flies frames |",
+        "|---|---|---|---|---|---|---|---|---|"
     ]
 
     for _, row in summary.iterrows():
@@ -351,13 +358,18 @@ def write_report(summary, examples):
             f"| {row['video']} | {row['held_out']} | {row['metadata_frames']} | "
             f"{row['edit_list_skipped']} | {row['decoded_frames']} | "
             f"{row['count_eq_2_pct']:.1f}% | {row['count_0']} / {row['count_1']} / "
-            f"{row['count_2']} / {row['count_3plus']} | {run} |"
+            f"{row['count_2']} / {row['count_3plus']} | {run} | "
+            f"{row['touching_frames']} ({row['touching_pct']:.1f}%) |"
         )
 
     lines += [
         "",
         f"All videos: count == 2 in {total_correct:.0f} / {total_frames} frames "
         f"({100 * total_correct / total_frames:.1f}%).",
+        "",
+        "Touching-flies frames: frames where the two flies form one contour "
+        "(area above the 10,442 px split), predicted as 2 flies. The count is "
+        "right, but sex, orientation and wing angle are not predicted there.",
         "",
         "## Decoded vs. metadata frame count",
         "",

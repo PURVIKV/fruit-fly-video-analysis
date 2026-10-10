@@ -249,9 +249,17 @@ No threshold was tuned on the videos.
   - The 100% video count is therefore partly on training footage.
 - **The video count only checks the number:** "count = 2" is correct in every frame,
   but the videos have no per-frame labels for sex, orientation or wings.
-- **Touching flies:** a contour predicted to contain two flies is counted
-  correctly, but it is not split, so sex, orientation and wing angle are not
-  predicted for it. This happens in up to 51 of 352 frames (test2).
+- **Touching flies:** when the two flies touch they form one fused contour
+  (area above about 10,442 px). It is counted as 2 but not classified: no sex,
+  orientation or wing angle is predicted for it. This affects 0–14.5% of frames
+  per video (`results/metrics/video_counts.md`):
+
+  | Video | test1 | test2 | test3 | test4 | test5 |
+  |---|---|---|---|---|---|
+  | Touching-flies frames | 35 / 351 (10.0%) | 51 / 352 (14.5%) | 0 / 736 (0%) | 18 / 632 (2.8%) | 21 / 632 (3.3%) |
+
+  The reported sex, orientation and wing accuracy therefore describes isolated
+  flies only.
 - **Sex errors remain:** in about 1% of test3's frames both flies are labelled
   female.
 - **Orientation labels:** head/abdomen labels exist for males (`mh`/`ma`, 277
