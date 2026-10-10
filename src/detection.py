@@ -33,9 +33,12 @@ CORE_THRESHOLD = 115
 WINGS_MEAN_OFFSET = 5
 WINGS_ERODE_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
 
+# Chosen in item J (results/metrics/detector_experiments.md): the arena
+# mask + fixed core threshold separates flies from the dark arena rim.
+# The original Otsu detector was {"arena_mask": False, "threshold": "otsu"}.
 DETECTOR = {
-    "arena_mask": False,
-    "threshold": "otsu",
+    "arena_mask": True,
+    "threshold": "core",
     "border_filter": True
 }
 

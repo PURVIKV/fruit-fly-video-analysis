@@ -1,0 +1,40 @@
+task,split,metric,mean,std,n_folds
+fly count,random,contour accuracy (%),100.0000,0.0000,10
+sex,random,accuracy (%),96.3462,2.5000,10
+orientation,random,flip error (%),1.7391,1.6268,10
+orientation,random,"angular error, mean (deg)",12.2363,2.0815,10
+orientation,random,"angular error, median (deg)",3.4247,0.5742,10
+orientation,random,baseline flip error (%),25.6522,3.1950,10
+orientation,random,baseline angular error (deg),52.3500,6.2243,10
+orientation,random,"axis-only error, perfect flip (deg)",11.9656,1.8371,10
+wing,random,"MAE linear, true orientation (deg)",4.1311,0.5007,10
+wing,random,"MAE ridge, true orientation (deg)",4.9162,0.5456,10
+wing,random,"MAE baseline, train mean (deg)",16.7233,1.0373,10
+fly count,image,contour accuracy (%),100.0000,0.0000,5
+fly count,image,image count accuracy (%),86.0000,1.7889,5
+sex,image,accuracy (%),96.8769,2.3627,5
+orientation,image,flip error (%),1.7681,1.6605,5
+orientation,image,"angular error, mean (deg)",11.8984,1.3206,5
+orientation,image,"angular error, median (deg)",3.6063,0.6702,5
+orientation,image,baseline flip error (%),26.5797,5.7267,5
+orientation,image,baseline angular error (deg),54.5076,8.0055,5
+orientation,image,"axis-only error, perfect flip (deg)",11.4493,0.9691,5
+wing,image,"MAE linear, true orientation (deg)",4.0053,0.3936,5
+wing,image,"MAE ridge, true orientation (deg)",4.5203,0.3230,5
+wing,image,"MAE linear, predicted orientation (deg)",10.7602,1.0470,5
+wing,image,"RMSE linear, predicted orientation (deg)",15.5772,1.5439,5
+wing,image,"MAE baseline, train mean (deg)",16.1262,0.5391,5
+fly count,session,contour accuracy (%),99.5973,0.8054,5
+fly count,session,image count accuracy (%),73.9822,37.6193,5
+sex,session,accuracy (%),83.6612,17.1311,3
+orientation,session,flip error (%),1.7491,2.6164,4
+orientation,session,"angular error, mean (deg)",13.4216,10.1798,4
+orientation,session,"angular error, median (deg)",5.3481,3.0907,4
+orientation,session,baseline flip error (%),23.0878,11.8298,4
+orientation,session,baseline angular error (deg),49.5846,12.6970,4
+orientation,session,"axis-only error, perfect flip (deg)",13.0828,9.9972,4
+wing,session,"MAE linear, true orientation (deg)",7.4614,0.9844,4
+wing,session,"MAE ridge, true orientation (deg)",10.2135,1.9506,4
+wing,session,"MAE linear, predicted orientation (deg)",13.7526,4.2946,4
+wing,session,"RMSE linear, predicted orientation (deg)",18.4769,5.7857,4
+wing,session,"MAE baseline, train mean (deg)",21.0218,5.7946,4

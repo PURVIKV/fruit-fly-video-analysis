@@ -1,0 +1,10 @@
+Fly-count decision tree (fit on all 378 contours, max_depth=2)
+class = number of flies inside the contour
+
+|--- area <= 21838.50
+|   |--- area <= 5896.00
+|   |   |--- class: 0
+|   |--- area >  5896.00
+|   |   |--- class: 1
+|--- area >  21838.50
+|   |--- class: 2
