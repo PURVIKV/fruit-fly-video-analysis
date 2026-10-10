@@ -5,8 +5,8 @@
   "frames_processed": 632,
   "max_frames": null,
   "display": true,
-  "processing_fps": 173.95,
-  "wall_clock_fps": 37.73,
+  "processing_fps": 182.54,
+  "wall_clock_fps": 38.06,
   "machine": "Apple M5, Darwin arm64, Python 3.11.17, OpenCV 4.14.0",
   "output": "results/videos/final_demo_test5.mp4"
 }
