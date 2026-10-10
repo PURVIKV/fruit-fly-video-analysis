@@ -7,6 +7,12 @@ orientation,random,"angular error, median (deg)",0.8629,0.1797,10
 orientation,random,baseline flip error (%),50.1149,5.7517,10
 orientation,random,baseline angular error (deg),89.6788,10.3476,10
 orientation,random,"axis-only error, perfect flip (deg)",1.6607,0.3859,10
+orientation,random,male flip error (%),0.4088,0.8185,10
+orientation,random,male angular error (deg),2.5669,1.3743,10
+orientation,random,male axis-only error (deg),2.0580,0.5420,10
+orientation,random,female flip error (%),0.0000,0.0000,10
+orientation,random,female angular error (deg),1.1305,0.2518,10
+orientation,random,female axis-only error (deg),1.1305,0.2518,10
 wing,random,"MAE linear, true orientation (deg)",5.8968,0.7711,10
 wing,random,"MAE ridge, true orientation (deg)",6.0417,0.7413,10
 wing,random,"MAE baseline, train mean (deg)",21.2190,1.6082,10
@@ -19,6 +25,12 @@ orientation,image,"angular error, median (deg)",0.7870,0.1196,5
 orientation,image,baseline flip error (%),47.9177,2.8237,5
 orientation,image,baseline angular error (deg),85.8987,4.9704,5
 orientation,image,"axis-only error, perfect flip (deg)",1.5912,0.2034,5
+orientation,image,male flip error (%),0.7843,1.5686,5
+orientation,image,male angular error (deg),3.0626,2.3853,5
+orientation,image,male axis-only error (deg),1.9479,0.3353,5
+orientation,image,female flip error (%),0.0000,0.0000,5
+orientation,image,female angular error (deg),1.0833,0.0906,5
+orientation,image,female axis-only error (deg),1.0833,0.0906,5
 wing,image,"MAE linear, true orientation (deg)",5.7801,0.5436,5
 wing,image,"MAE ridge, true orientation (deg)",6.0063,0.6785,5
 wing,image,"MAE linear, predicted orientation (deg)",6.0214,0.6306,5
@@ -33,6 +45,12 @@ orientation,session,"angular error, median (deg)",1.1102,0.4621,5
 orientation,session,baseline flip error (%),63.3255,11.0055,5
 orientation,session,baseline angular error (deg),113.5395,19.6887,5
 orientation,session,"axis-only error, perfect flip (deg)",1.8339,0.9972,5
+orientation,session,male flip error (%),1.1020,1.4191,5
+orientation,session,male angular error (deg),4.2207,3.5385,5
+orientation,session,male axis-only error (deg),2.6273,2.0437,5
+orientation,session,female flip error (%),0.4255,0.8511,5
+orientation,session,female angular error (deg),1.8467,1.9517,5
+orientation,session,female axis-only error (deg),1.1031,0.6521,5
 wing,session,"MAE linear, true orientation (deg)",7.8189,2.6227,5
 wing,session,"MAE ridge, true orientation (deg)",8.9411,2.8291,5
 wing,session,"MAE linear, predicted orientation (deg)",8.6101,2.1742,5

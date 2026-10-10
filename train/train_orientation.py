@@ -155,7 +155,21 @@ def evaluate_split(data, train_idx, test_idx, n_components=N_COMPONENTS):
         y[test_idx]
     )
 
+    by_sex = {}
+
+    for sex in FLIES:
+
+        mask = data["sex"][test_idx] == sex
+
+        if mask.any():
+            by_sex[sex] = {
+                "flip_error": np.mean(flip[mask] != y[test_idx][mask]),
+                "angle_mae": np.mean(errors[mask]),
+                "axis_only_mae": np.mean(oracle_errors[mask])
+            }
+
     return {
+        "by_sex": by_sex,
         "flip_error": np.mean(flip != y[test_idx]),
         "angle_mae": np.mean(errors),
         "angle_median": np.median(errors),

@@ -158,7 +158,16 @@ def score_orientation(data, scheme, n_components=orientation.N_COMPONENTS):
             "angular error, median (deg)": result["angle_median"],
             "baseline flip error (%)": 100 * result["baseline_flip_error"],
             "baseline angular error (deg)": result["baseline_angle_mae"],
-            "axis-only error, perfect flip (deg)": result["axis_only_mae"]
+            "axis-only error, perfect flip (deg)": result["axis_only_mae"],
+            **{
+                f"{sex} {name}": value
+                for sex, metrics in result["by_sex"].items()
+                for name, value in [
+                    ("flip error (%)", 100 * metrics["flip_error"]),
+                    ("angular error (deg)", metrics["angle_mae"]),
+                    ("axis-only error (deg)", metrics["axis_only_mae"])
+                ]
+            }
         })
 
     return folds
@@ -250,7 +259,7 @@ def summarise(task, scheme, folds):
 
     rows = []
 
-    for metric in folds[0]:
+    for metric in dict.fromkeys(name for fold in folds for name in fold):
 
         values = np.array([fold[metric] for fold in folds if metric in fold])
 
