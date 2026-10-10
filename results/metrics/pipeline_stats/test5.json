@@ -1,0 +1,12 @@
+{
+  "video": "input/videos/test5.mp4",
+  "resolution": "1530 x 1530",
+  "input_fps": 35.0,
+  "frames_processed": 632,
+  "max_frames": null,
+  "display": true,
+  "processing_fps": 173.95,
+  "wall_clock_fps": 37.73,
+  "machine": "Apple M5, Darwin arm64, Python 3.11.17, OpenCV 4.14.0",
+  "output": "results/videos/final_demo_test5.mp4"
+}

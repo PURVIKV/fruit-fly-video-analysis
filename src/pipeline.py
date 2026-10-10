@@ -24,8 +24,19 @@ from src.features import (
 
 
 VIDEO_PATH = "input/videos/test1.mp4"
-OUTPUT_PATH = "results/videos/final_demo.mp4"
-STATS_PATH = "results/metrics/pipeline_stats.json"
+OUTPUT_DIR = Path("results/videos")
+STATS_DIR = Path("results/metrics/pipeline_stats")
+
+
+def output_paths(video_path):
+    """Annotated video and timing file, named after the input video."""
+
+    stem = Path(video_path).stem
+
+    return (
+        OUTPUT_DIR / f"final_demo_{stem}.mp4",
+        STATS_DIR / f"{stem}.json"
+    )
 
 FLY_COUNT_MODEL = "models/fly_count_model.pkl"
 SEX_MODEL = "models/sex_model.pkl"
@@ -563,6 +574,8 @@ def main(
     print("FRUIT FLY ML VIDEO ANALYSIS")
     print("=" * 70)
 
+    output_path, stats_path = output_paths(video_path)
+
     Path(
         "results/videos"
     ).mkdir(
@@ -639,7 +652,7 @@ def main(
     )
 
     writer = cv2.VideoWriter(
-        OUTPUT_PATH,
+        str(output_path),
         fourcc,
         fps,
         (width, height)
@@ -657,7 +670,7 @@ def main(
 
     print(
         "\nOutput:",
-        OUTPUT_PATH
+        output_path
     )
 
     print(
@@ -801,20 +814,20 @@ def main(
         "processing_fps": round(average_fps, 2),
         "wall_clock_fps": round(wall_fps, 2),
         "machine": machine_description(),
-        "output": OUTPUT_PATH
+        "output": str(output_path)
     }
 
-    Path(STATS_PATH).parent.mkdir(parents=True, exist_ok=True)
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(STATS_PATH, "w", encoding="utf-8") as file:
+    with open(stats_path, "w", encoding="utf-8") as file:
         json.dump(stats, file, indent=2)
 
     if h264:
-        reencode_h264(OUTPUT_PATH)
+        reencode_h264(output_path)
 
     print(
         "Output video:",
-        OUTPUT_PATH
+        output_path
     )
 
     print(

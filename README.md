@@ -20,17 +20,27 @@ automatically, fast enough to keep up with the video.
 
 ## Method
 
-All models start from the same detector (`src/detection.py`): grayscale → Gaussian
-blur → inverted Otsu threshold → external contours with area ≥ 500 px that do not
-touch the image border. Training and the video pipeline call the same functions,
-so their features are computed identically.
+All models start from the same detector (`src/detection.py`), the one used in the
+original Stanford project:
+
+1. A filled circle the size of the arena (radius `(rows − 1) // 2`, centred in the
+   square frame) masks out everything outside the arena.
+2. A fixed grey-level threshold of 115 keeps only the dark body **core** (head,
+   thorax, abdomen). Legs and translucent wings are lighter and drop out, and so do
+   the dark arena rim (about 180) and reflections of flies in the wall.
+3. External contours with area ≥ 500 px that do not touch the image border are the
+   candidate flies.
+
+Training and the video pipeline call the same functions, so their features are
+computed identically. The detector was chosen by measurement; see
+[Detector choice](#detector-choice).
 
 | Task | Features (from the frame only) | Model |
 |---|---|---|
-| Fly count | contour area | `DecisionTreeClassifier(max_depth=2)` predicting 0 / 1 / 2 flies per contour; the frame count is the sum over contours |
-| Sex | contour area + bounding-box aspect ratio | `StandardScaler` + `LogisticRegression` |
-| Orientation | body axis from image moments; 240 px patch rotated so the axis is vertical; HOG | `PCA(20)` + `LogisticRegression` decides whether the head is at the other end (+180°) |
-| Wing angle (male) | 288 px patch rotated upright, split into right and mirrored left halves; HOG | `PCA(80)` + `LinearRegression` (Ridge also reported), one regressor for both wings |
+| Fly count | core contour area | `DecisionTreeClassifier(max_depth=2)` predicting 1 / 2 flies per contour; the frame count is the sum over contours. The learned split is 10,442 px, the same as in the original project |
+| Sex | core contour area + bounding-box aspect ratio | `StandardScaler` + `LogisticRegression` |
+| Orientation | body axis from the image moments of the core; 240 px patch rotated so the axis is vertical; HOG | `PCA(20)` + `LogisticRegression` decides whether the head is at the other end (+180°) |
+| Wing angle (male) | 288 px grey patch (wings included) rotated upright, split into right and mirrored left halves; HOG | `PCA(80)` + `LinearRegression` (Ridge also reported), one regressor for both wings |
 
 The orientation and wing models follow the Stanford project's approach: rotate the
 fly upright, compute HOG, reduce with PCA, then fit a linear model.
@@ -106,13 +116,26 @@ python train/train_wing_angle.py
 # 2. Cross-validated evaluation -> results/metrics/evaluation.{csv,md}, results/plots/*_pca.png
 python evaluate.py
 
-# 3. Video pipeline -> results/videos/final_demo.mp4, results/metrics/pipeline_stats.json
-python main.py                          # full test1.mp4 with a preview window (Q to stop)
-python main.py --max-frames 50          # quick smoke test
-python main.py --no-display --video input/videos/test4.mp4
+# 3. Frame-level fly count on all test videos -> results/metrics/video_counts.md
+#    (per-frame CSV and example failure frames in results/debug/, git-ignored)
+python eval_video_counts.py
 
-# 4. Regenerate results/metrics/model_results.txt from steps 2 and 3
+# 4. Video pipeline -> results/videos/final_demo_<video>.mp4,
+#    results/metrics/pipeline_stats/<video>.json
+python main.py                                  # test1.mp4 with a preview window (Q to stop)
+python main.py --video input/videos/test5.mp4   # any other video
+python main.py --max-frames 50 --no-display     # quick headless smoke test
+python main.py --h264                           # also write an H.264 copy for PowerPoint (needs ffmpeg)
+
+# 5. Regenerate results/metrics/model_results.txt from steps 2 and 4
 python make_report.py
+```
+
+Optional experiments (their outputs are committed):
+
+```bash
+python eval_detectors.py            # detector candidates -> results/metrics/detector_experiments.md
+python eval_orientation_by_sex.py   # per-sex orientation, old vs new detector
 ```
 
 Each trainer prints a grouped hold-out check, then saves a model fit on all its
@@ -127,41 +150,79 @@ data. `src/model_io.py` makes sure each trainer can only write its own model fil
 - **GroupKFold by image:** 5 folds; all contours and both wings of one image stay
   in the same fold.
 - **Leave-one-session-out:** a whole recording folder is held out. This is the
-  strictest test, because frames within a session are near-duplicates. Only
-  sessions that contain examples of a task get a fold (see Limitations).
+  strictest test, because frames within a session are near-duplicates.
 
-| Model | Before fixes (hand-written, one split) | After: GroupKFold by image | After: leave-one-session-out |
-|---|---|---|---|
-| Fly count, per contour | 100% (circular labels) | 100.0 ± 0.0% | 99.6 ± 0.8% |
-| Fly count, per image (= 2) | — | 86.0 ± 1.8% | 74.0 ± 37.6% |
-| Sex | 88.46% (one 52-sample split) | 96.9 ± 2.4% | 83.7 ± 17.1% |
-| Orientation, flip error | 0% (keypoint features, unusable on video) | 1.8 ± 1.7% | 1.7 ± 2.6% |
-| Orientation, mean angular error | — | 11.9 ± 1.3° | 13.4 ± 10.2° |
-| Wing angle MAE, true orientation | 4.24° (keypoint features, random split) | 4.0 ± 0.4° | 7.5 ± 1.0° |
-| Wing angle MAE, predicted orientation | — | 10.8 ± 1.0° | 13.8 ± 4.3° |
-| Pipeline speed (test1.mp4) | 45.17 FPS | 193.5 FPS processing, 38.4 FPS wall clock with video writing and preview (Apple M5) | |
+Three stages are compared:
 
-Baselines, leave-one-session-out:
+- **Original:** the numbers hand-written in the first version of this repository.
+- **Fixed models, Otsu detector:** the honest models and evaluation (items A–G),
+  still using the first detector (Otsu threshold over the whole frame).
+- **Final:** the same models on the arena-mask + core-threshold detector (items J–K).
 
-- **Orientation:** always predicting the majority flip gives a 23.1% flip error and
-  a 49.6° mean angular error.
-- **Wing angle:** predicting the training mean gives a 21.0° MAE.
+| Metric | Original (one split) | Fixed models, Otsu detector: leave-one-session-out | Final: GroupKFold by image | Final: leave-one-session-out |
+|---|---|---|---|---|
+| Video frames with count = 2 (all 5 videos) | not measured | 71.3% | — | **100%** (2703 / 2703) |
+| Fly count, per contour | 100% (circular labels) | 99.6 ± 0.8% | 100.0 ± 0.0% | 100.0 ± 0.0% |
+| Fly count, per image (= 2) | — | 74.0 ± 37.6% | 100.0 ± 0.0% | 100.0 ± 0.0% |
+| Sex | 88.46% (one 52-sample split) | 83.7 ± 17.1% | 98.4 ± 0.7% | 98.2 ± 3.1% |
+| Orientation, flip error | 0% (keypoint features, unusable on video) | 1.7 ± 2.6% | 0.5 ± 0.9% | 0.9 ± 1.2% |
+| Orientation, mean angular error | — | 13.4 ± 10.2° | 2.2 ± 1.4° | 3.3 ± 2.5° |
+| Male / female axis error (perfect flip) | — | 17.2° / 3.6° | — | 2.6° / 1.1° |
+| Wing angle MAE, true orientation | 4.24° (keypoint features, random split) | 7.5 ± 1.0° | 5.8 ± 0.5° | 7.8 ± 2.6° |
+| Wing angle MAE, predicted orientation | — | 13.8 ± 4.3° | 6.0 ± 0.6° | 8.6 ± 2.2° |
+| Pipeline speed (test1.mp4, Apple M5) | 45.17 FPS | 193.5 FPS processing | 176.4 FPS processing, 37.2 FPS wall clock with video writing and preview | |
 
-Even with a perfect flip, the moment axis alone has a 13.1° mean angular error. Most
-of the remaining orientation error therefore comes from the axis, not from the flip
-classifier.
+Baselines, final detector, leave-one-session-out:
+
+- **Orientation:** always predicting the training set's majority flip gives a 63.3%
+  flip error and a 113.5° mean angular error. That is worse than chance, because the
+  majority direction differs between sessions.
+- **Wing angle:** predicting the training mean gives a 24.7° MAE.
+
+The only number that got worse with the new detector is the wing MAE with *true*
+orientation (7.5° → 7.8°). That is within the spread across sessions and is measured
+on more males (236 instead of 137). The end-to-end wing error, which is what the
+pipeline produces, improved from 13.8° to 8.6°.
+
+Processing FPS fell from 193 to 176 even though detection got faster (1.7 → 0.7 ms
+per frame). The per-fly models and labels now run on two flies in almost every
+frame. Most of the time per frame goes to decoding the 1530 × 1530 frame and drawing.
 
 The full tables are in:
 
 - `results/metrics/evaluation.md`
+- `results/metrics/video_counts.md`
 - `results/metrics/model_results.txt` (includes the original numbers in a
   "before fixes" section)
+- `results/metrics/before_detector_fix/` (all metrics with the Otsu detector)
 
 The PCA-size curves are in `results/plots/orientation_pca.png` and
 `results/plots/wing_pca.png`. The audit that motivated the fixes is in
 `results/metrics/audit.md`.
 
-### Why the "before" numbers were wrong
+### Detector choice
+
+The first detector (Gaussian blur + Otsu over the whole frame) marked the dark area
+outside the arena floor as one huge blob touching the image border. Flies that
+touched the floor's edge merged with it and were discarded, so the video fly count
+was wrong in 28.7% of frames (test3: 82.5%).
+
+`eval_detectors.py` tried the original project's settings one switch at a time. For
+each one it retrained the count model and re-ran the videos and the
+leave-one-session-out evaluation (`results/metrics/detector_experiments.md`):
+
+| Candidate | Video count = 2 | Sex (LOSO) | Orientation error (LOSO) |
+|---|---|---|---|
+| Otsu (baseline) | 71.3% | 83.7% | 13.4° |
+| + arena mask | 71.3% | 86.4% | 16.4° |
+| **mask + core threshold 115 (kept)** | **100%** | **98.2%** | **3.3°** |
+| mask + "wings" threshold (arena mean − 5) | 41.5% | 50.9% | 24.2° |
+| mask + core, no border filter | 100% (identical, not kept) | 98.2% | 3.3° |
+| mask + Otsu, no border filter | 60.9% | 67.6% | 31.7° |
+
+No threshold was tuned on the videos.
+
+### Why the "original" numbers were wrong
 
 - **Fly count:** each video frame was labelled `min(#contours, 2)`, and the
   features were the sizes of those same contours. The 100% was guaranteed by
@@ -176,42 +237,38 @@ The PCA-size curves are in `results/plots/orientation_pca.png` and
 
 ## Limitations
 
-- **Small data:** 326 annotated images from only 5 sessions, and not every task
-  has examples in every session. Leave-one-session-out has 5 folds for the fly
-  count, 4 for orientation and wing angle, and only 3 for sex. The standard
-  deviations are large: sex accuracy is 91%, 100% or 60% depending on the
-  held-out session, and the 60% fold has only 10 flies.
-- **Detector recall:**
-  - 188 annotated flies, mostly near the arena wall, merge with the dark wall into
-    a border-touching blob that the detector discards.
-  - 76 of the 326 images have no usable contour at all.
-  - The per-image count accuracy is therefore an upper bound.
-  - On `test1.mp4` the frame count is 2 in 256 of 351 frames. On `test4.mp4` it is
-    2 in all 632 frames.
+- **Small data:** 326 annotated images from only 5 recording sessions. The
+  leave-one-session-out standard deviations are large because each session is
+  different (for example, sex accuracy is 92% on the wall-running session and
+  99–100% on the others).
+- **No truly held-out video:**
+  - Session `12-08_22-00-00` was cut from `test1.mp4` and `12-08_11-15-00` from
+    `test4.mp4`, so those two demo videos overlap the training data.
+  - test2, test3 and test5 are probably held out, but session `12-04_17-54-43` was
+    "sampled uniformly from video" without saying which one.
+  - The 100% video count is therefore partly on training footage.
+- **The video count only checks the number:** "count = 2" is correct in every frame,
+  but the videos have no per-frame labels for sex, orientation or wings.
 - **Touching flies:** a contour predicted to contain two flies is counted
   correctly, but it is not split, so sex, orientation and wing angle are not
-  predicted for it.
-- **Orientation labels:**
-  - Head and abdomen labels exist for males (`mh`/`ma`, 277 images) and for
-    females (`fh`/`fa`, 217 images), so orientation is trained and applied for
-    both sexes.
-  - Only isolated flies can be used: 138 males and 88 females.
+  predicted for it. This happens in up to 51 of 352 frames (test2).
+- **Sex errors remain:** in about 1% of test3's frames both flies are labelled
+  female.
+- **Orientation labels:** head/abdomen labels exist for males (`mh`/`ma`, 277
+  images) and females (`fh`/`fa`, 217 images). Only isolated flies can be used:
+  256 males and 178 females.
 - **Wing angle:**
-  - Only 137 isolated males have both wing tips annotated, and the model runs only
-    on flies predicted male.
+  - 236 isolated males have both wing tips annotated, and the model runs only on
+    flies predicted male.
   - The target is the angle between the head→abdomen axis and the line from the
     body point `mp` to the wing tip.
-- **Orientation error propagates to the wings:** the moment axis is bent by spread
-  wings, and this error carries into the wing angle. The wing MAE roughly doubles
-  when the patch is rotated by the predicted heading instead of the annotated one.
+- **Fixed threshold:** the core threshold of 115 assumes this camera and lighting.
+  A different setup would need it re-checked.
 - **Hyperparameters:**
   - The PCA sizes (20 for orientation, 80 for wing) were chosen with GroupKFold by
     image, not with nested cross-validation.
   - The leave-one-session-out curves show that the choice is not critical for
     orientation.
-- **The demo video is not held-out data:** session `12-08_22-00-00` was taken
-  from `test1.mp4` (and `12-08_11-15-00` from `test4.mp4`), so the demo shows
-  frames close to the training data.
 - **Speed:** FPS depends on the machine. The wall-clock number includes writing a
   1530 × 1530 video and the preview window.
 
@@ -219,27 +276,31 @@ The PCA-size curves are in `results/plots/orientation_pca.png` and
 
 ```text
 fruit-fly-video-analysis/
-├── main.py                  entry point (--max-frames, --no-display, --video)
-├── evaluate.py              random / GroupKFold / leave-one-session-out evaluation
-├── make_report.py           writes results/metrics/model_results.txt
-├── audit_phase1.py          checks behind results/metrics/audit.md
+├── main.py                     entry point (--video, --max-frames, --no-display, --h264)
+├── evaluate.py                 random / GroupKFold / leave-one-session-out evaluation
+├── eval_video_counts.py        frame-level fly count on the test videos
+├── eval_detectors.py           detector experiments
+├── eval_orientation_by_sex.py  per-sex orientation, old vs new detector
+├── make_report.py              writes results/metrics/model_results.txt
+├── audit_phase1.py             checks behind results/metrics/audit.md
 ├── src/
-│   ├── detection.py         shared thresholding + contour detection + moment axis
-│   ├── features.py          shared count / upright-patch / HOG / wing-half features
-│   ├── annotations.py       loading of labelme JSON + matching flies to contours
-│   ├── model_io.py          save guard: each trainer may only write its own model
-│   ├── pipeline.py          video pipeline
-│   └── ...                  earlier exploratory scripts (fly_count.py is deprecated)
+│   ├── detection.py            arena mask + thresholding + contours + moment axis
+│   ├── features.py             shared count / upright-patch / HOG / wing-half features
+│   ├── annotations.py          loading of labelme JSON + matching flies to contours
+│   ├── model_io.py             save guard: each trainer may only write its own model
+│   ├── pipeline.py             video pipeline
+│   └── ...                     earlier exploratory scripts (fly_count.py is deprecated)
 ├── train/
 │   ├── train_fly_count.py
 │   ├── train_sex.py
 │   ├── train_orientation.py
 │   └── train_wing_angle.py
-├── models/                  trained models (*.pkl)
+├── models/                     trained models (*.pkl)
 └── results/
-    ├── metrics/             evaluation.md/.csv, model_results.txt, audit.md, ...
+    ├── metrics/                evaluation, video counts, experiments, reports, audit
     ├── plots/
-    └── videos/              final_demo.mp4 (git-ignored)
+    ├── debug/                  per-frame CSV + failure frames (git-ignored)
+    └── videos/                 final_demo_<video>.mp4 (git-ignored)
 ```
 
 ## Credits
